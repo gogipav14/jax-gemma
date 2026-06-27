@@ -1,0 +1,22 @@
+# Core (CPU-only is fine through Phase 4)
+jax>=0.9
+jaxlib
+numpy
+flax            # NN modules
+optax           # optimizers
+
+# Env / IPC
+gymnasium
+
+# Seed commanders (offline, one-time trace generation on CPU)
+# Run via llama-cpp-python (GGUF) or transformers; Unsloth for optional fine-tuning.
+huggingface-hub
+# llama-cpp-python   # uncomment for GGUF inference on CPU
+# transformers
+# unsloth            # optional: cheap fine-tuning / dynamic 4-bit
+
+# Replay parsing (optional, Phase 4)
+# (CnCNet .rep parser TBD)
+
+# Dev
+pytest

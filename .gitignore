@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# JAX / ML artifacts
+checkpoints/
+runs/
+wandb/
+*.ckpt
+*.orbax
+*.npz
+
+# Models (download locally; do not commit weights)
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# C++ / Visual Studio build output
+bridge/**/Debug/
+bridge/**/Release/
+bridge/**/x64/
+bridge/**/*.obj
+bridge/**/*.pdb
+bridge/**/*.ilk
+*.user
+.vs/
+
+# Bridge build artifacts
+*.dll
+!*/keep.dll
+
+# Game data / replays (large, licensed)
+replays/*.rep
+replays/raw/
+
+# Shared-memory dumps / logs
+*.log
+obs_dump/
+tmp/

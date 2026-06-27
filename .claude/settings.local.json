@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-PnpDevice -Class Display | Select-Object Status, FriendlyName, InstanceId | Format-List; \"--- Driver store / installed driver packages for display ---\"; Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq \"DISPLAY\" } | Select-Object DeviceName, DriverVersion, DriverDate, DriverProviderName, IsSigned | Format-List)"
+    ]
+  }
+}
