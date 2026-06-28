@@ -136,3 +136,31 @@ GROUP_* via MegaMission. Group commands = one MegaMission per member unit (`Whom
   it as a global key.
 - **Crash guards:** skip `InLimbo` technos and any with a null `GetTechnoType()`; bound writes by
   `N_OWN`/`N_ENEMY`. (Reviewed adversarially; 4 issues found and fixed before first run.)
+
+## Phase 2 implementation notes (as built) — VERSION 2
+
+- **OBS additions (for actions + the serial-proof):** `BridgeEntity` gained `unique_id`
+  (`AbstractClass::UniqueID`, the stable handle Python passes back to target a unit) and
+  `category_rtti` (`WhatAmI()` runtime RTTI). `BridgeOBS` gained `factories[16]` (`BridgeFactory`:
+  `current_type_id`, `queue_head_type_id`, `category_rtti`, `progress 0..54`, `queue_count`, flags)
+  enumerated from `FactoryClass::Array` filtered by `Owner==agent` — the read side of the serial-proof.
+- **ACT region `Local\yr_bridge_act` (Python writes, DLL reads):** `BridgeACT` = header +
+  `action_seq` + `ack_seq` + `result` + `BridgeAction`. **Exactly-once protocol:** Python writes the
+  body then publishes `action_seq` LAST; the DLL executes when `action_seq != last_ack`, then writes
+  `ack_seq` + an `ActResult`. **Load-bearing:** the Python writer BLOCKS on `ack_seq` before sending
+  the next action (no seqlock retry on the DLL read side relies on this).
+- **Injection site:** driven from the existing `0x55DDA0` (MainLoop_AfterRender) hook via
+  `Bridge::DispatchACTFrame()` → `EventClass::OutList.Add()`. This is ~1-frame-late (post-render),
+  which is fine for v1 and avoids the `0x647BEB`/`0x64C598` per-event/chaining complexity. The
+  non-cheat guarantee holds: events go through the human `OutList` path, never `DemandProduction`/`AI_*`.
+- **Verified EventClass ctors:** PRODUCE `(hidx,EventType::Produce,(int)*Type-RTTI,type_id,naval)`
+  @0x4C6970 — **the rtti MUST be a *Type* RTTI (UnitType=40/BuildingType=7/InfantryType=16/
+  AircraftType=3); a runtime RTTI crashes**. PLACE @0x4C6AE0; MegaMission (move/attack-move) @0x4C6860;
+  SpecialPlace (superweapon) @0x4C6B60. CanBuild + HasFactoryForObject gate every PRODUCE.
+- **v1 scope:** PRODUCE, PLACE, GROUP_MOVE (single-unit move), GROUP_ATTACK (single-unit
+  attack-move), SUPERWEAPON implemented. SELL/SET_PRIMARY deferred (ambiguous YRpp Target ctor);
+  GROUP_FORM/STANCE + multi-unit groups deferred. Specific-enemy attack (vs attack-move-to-cell)
+  needs a 2nd target field — later.
+- **Python API:** `yr_env/write_act.py` (`ActWriter.produce/place/move/attack_move/superweapon`),
+  `yr_env/read_obs.py` (`ObsReader.read_state/read_factories`), `yr_env/contract.py` v2 (struct
+  formats + the runtime→*Type* RTTI map). Struct sizes verified equal to the C++ `static_assert`s.
