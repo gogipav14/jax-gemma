@@ -116,3 +116,23 @@ GROUP_* via MegaMission. Group commands = one MegaMission per member unit (`Whom
 - Per-house shroud accessor in YRpp (`MapClass`/`HouseClass`).
 - Group abstraction: maintain group→unit membership in the DLL or in Python? (Draft: DLL keeps a
   `group_id` map keyed by object IDs so commands survive unit attrition.)
+
+## Phase 1 implementation notes (as built)
+
+- **Hook site:** `DEFINE_HOOK(0x55DDA0, Bridge_AfterFrame, 0x5)` (MainLoop_AfterRender), returns 0 —
+  chains cleanly with ProtocolZero's return-0 hook at the same address. Guarded by
+  `ScenarioClass::Instance` (the hook also fires on menu/score screens where state is stale).
+- **Enemy visibility = CURRENT, not "ever seen".** Enemies are emitted only when their cell is
+  `!IsShrouded() && !IsFogged()` (via `ObjectClass::GetCell()`). We deliberately do **not** use
+  `DiscoveredBy` (it's sticky → would leak live positions through fog = maphack). Phase 1 assumes
+  the agent house == `HouseClass::CurrentPlayer`, so the global cell shroud/fog *is* the agent's
+  view; per-house visibility for an arbitrary agent house is deferred to Phase 3 (self-play).
+- **Torn-read protection:** the DLL writes the whole OBS body, then `MemoryBarrier()`, then publishes
+  `header.frame_seq` LAST. The Python reader should: read `frame_seq` → read body → re-read
+  `frame_seq`; if it changed, retry (seqlock pattern). Phase 1 validation reads via the `-LOG`
+  `debug.log` `[BRIDGE]` dump, not the mapping, so this only matters from Phase 3 on.
+- **`type_id` = `GetArrayIndex()`** is per-RTTI-category (infantry/unit/aircraft/building indexed
+  separately) — NOT globally unique yet. A category byte will be added in Phase 1b so Python can use
+  it as a global key.
+- **Crash guards:** skip `InLimbo` technos and any with a null `GetTechnoType()`; bound writes by
+  `N_OWN`/`N_ENEMY`. (Reviewed adversarially; 4 issues found and fixed before first run.)
