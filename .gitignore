@@ -46,3 +46,6 @@ replays/raw/
 *.log
 obs_dump/
 tmp/
+
+# Local Claude Code / editor settings (machine-specific, not for the public repo)
+.claude/
