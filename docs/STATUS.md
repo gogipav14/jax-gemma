@@ -15,15 +15,21 @@
 - [x] Clone `CnCNet/yrpp-spawner` (+ `YRpp` submodule, HTTPS) into `bridge/yrpp-spawner`
 - [x] Confirm C++ toolchain — VS2022 BuildTools (MSBuild + MSVC 14.43.34808 + Win10 SDK 22621 + v143). cl.exe x86 present.
 - [x] Pin non-cheat injection API — `EventClass::OutList.Add()` @0x00A802C8 + ctor addrs (see bridge-contract.md)
-- [ ] **BLOCKED:** install ATL component (`atlbase.h`) — needed by YRpp `Interfaces.h`. CLI `modify` fails
-      ("product cannot be found": registered product 17.13.6 vs installer channel 17.14). **Use VS Installer GUI.**
-- [ ] Build `CnCNet-Spawner.dll` (Debug|Win32) via `scripts/build.ps1`
-- [ ] Inject into a local skirmish and confirm it launches
+- [x] ATL component installed (via VS Installer GUI)
+- [x] Build `CnCNet-Spawner.dll` (Debug + Debug-CnCNetYR | Win32) via `scripts/build.ps1` — 0 warnings/errors
+- [x] **Injection PROVEN** — `syringe.log`: "Recognized DLL: CnCNet-Spawner.dll" + "Done (2736 hooks added)", game process ran, no crash/except. Original DLL restored after.
 
-### How to unblock ATL (GUI, reliable)
-Visual Studio Installer → **Visual Studio Build Tools 2022** → **Modify** → **Individual components**
-→ search "ATL" → check **"C++ ATL for latest v143 build tools (x86 & x64)"** → **Modify**.
-Then run `pwsh -File scripts/build.ps1`.
+### Phase 0 findings (important)
+- This install runs **Ares.dll + Phobos.dll + CnCNet-Spawner.dll** together (live spawner = "CnCNet YR, hardened" 0.0.0.16, Phobos 0.4.0.2). Our Phase-1 hook must avoid colliding with Phobos hooks → use `DEFINE_HOOK_AGAIN`.
+- **Correct launch command** (from `Client\client.log` / `QuickMatch.ini`) — game args go inside `--args="..."`:
+  `Syringe.exe -i=Ares.dll -i=CnCNet-Spawner.dll -i=Phobos.dll gamemd-spawn.exe --args="-SPAWN -LOG -CD -Include -Inheritance"`
+  (A bare `-SPAWN` is eaten by SyringeEx → "game started incorrectly" banner. `-LOG` enables debug.log.)
+  Now wired into `scripts/deploy-and-test.ps1 -Launch`.
+
+### Phase 1 — DESIGNED (see docs/phase1-plan.md)
+Verified per-frame hook `DEFINE_HOOK_AGAIN(0x647BEB, ...)`; fog-honored enumeration via
+`TechnoClass::Array` + `ObjectClass::DiscoveredBy(pAgent)`; OBS structs + exact YRpp accessors;
+`src/Bridge/Bridge.{h,cpp,Hook.cpp}` + vcxproj edits; zero crash risks flagged.
 
 ## Environment (verified)
 - Game: `C:\Program Files (x86)\Steam\steamapps\common\Command & Conquer Red Alert II\` (vanilla YR / CnCNet)
