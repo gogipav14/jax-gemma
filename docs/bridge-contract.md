@@ -80,20 +80,35 @@ action = {
 }
 ```
 
-### EventClass mapping (to confirm in Phase 2 against YRpp `EventClass.h`)
-| action | EventType | notes |
-|--------|-----------|-------|
-| PRODUCE | `PRODUCE` | house index = agent; respects the shared queue automatically |
-| PLACE | `PLACE` | building must be ready in factory |
-| SELL | `SELL` / `SELLCELL` | |
-| GROUP_MOVE | `MEGAMISSION` (Move) | issued per unit in the group |
-| GROUP_ATTACK | `MEGAMISSION` (Attack/Guard) | target = TechnoClass or cell |
-| SUPERWEAPON | `SPECIAL_PLACE` | super must be charged |
+### EventClass mapping (CONFIRMED against YRpp `EventClass.h`)
 
-> **Non-cheat invariant:** every event is enqueued with the agent's `house_index` on the same
-> outgoing event list the human UI uses. The bridge must NOT call AI-only production helpers or
-> write engine memory to fabricate units/credits. Phase 2 asserts: with ≥2 war factories, PRODUCE
-> events still yield strictly serial production.
+**Injection point:** `EventClass::OutList.Add(ev)` — `OutList` is `QueueClass<EventClass,128>` @
+`0x00A802C8`, the *same outgoing queue the human UI Adds to*. (`EventClass::AddEvent` is deprecated
+and just forwards to `OutList.Add`.) Events carry an explicit `char HouseIndex`, so we issue "as"
+the agent's house. The engine drains OutList → DoList and executes on the player command path, so
+the shared production queue / economy / fog apply automatically. **This is the non-cheat guarantee.**
+
+Each event is built via a documented constructor (hardcoded `JMP_THIS` thunk address):
+
+| action | EventClass ctor (houseIndex first) | addr | payload struct |
+|--------|-----------------------------------|------|----------------|
+| PRODUCE | `(hidx, EventType::Produce, rtti, heapId, BOOL isNaval)` | `0x4C6970` | `Produce{RTTIType, HeapID, IsNaval}` |
+| SUSPEND/ABANDON | same shape, EventType::Suspend/Abandon | `0x4C6970` | `Suspend`/`Abandon` |
+| PLACE | `(hidx, EventType::Place, AbstractType rtti, heapId, isNaval, CellStruct cell)` | `0x4C6AE0` | `Place{RTTIType,HeapID,IsNaval,Location}` |
+| SET_PRIMARY | `(hidx, EventType::Primary, id, rtti)` (Target ctor) | `0x4C65E0` | `Primary{Whom}` |
+| SELL | `(hidx, EventType::Sell, id, rtti)` (Target ctor) | `0x4C65E0` | `Sell{Whom}` |
+| SELLCELL (walls) | `(hidx, EventType::SellCell, CellStruct cell)` | `0x4C6650` | `SellCell{Location}` |
+| GROUP_MOVE/ATTACK | `(hidx, TargetClass src, Mission, TargetClass target, dest, follow)` (MegaMission) | `0x4C6860` | `MegaMission{Whom,Mission,Target,Destination,Follow}` |
+| SUPERWEAPON | `(hidx, EventType::SpecialPlace, id, CellStruct cell)` | `0x4C6B60` | `SpecialPlace{ID,Location}` |
+
+`EventClass` is `#pragma pack(1)`, `sizeof==111`: `EventType Type; bool IsExecuted; char HouseIndex;
+uint Frame;` then a 104-byte union of payloads. `Mission` enum (Move/Attack/Guard/Enter/…) drives
+GROUP_* via MegaMission. Group commands = one MegaMission per member unit (`Whom` = unit target).
+
+> **Non-cheat invariant:** only ever enqueue via `OutList.Add` with the agent's `HouseIndex`. The
+> bridge must NOT call AI-only production helpers (e.g. `HouseClass::AI*`) or write engine memory to
+> fabricate units/credits. Phase 2 asserts: with ≥2 war factories, PRODUCE events still yield
+> strictly serial production (identical to a human).
 
 ## Open items (pin during implementation)
 - Exact `EventClass` struct/union field names + the enqueue static/global (re-confirm `EventClass.h`

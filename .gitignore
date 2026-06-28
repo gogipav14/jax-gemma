@@ -34,6 +34,10 @@ bridge/**/*.ilk
 *.dll
 !*/keep.dll
 
+# Vendored upstream spawner (cloned from CnCNet/yrpp-spawner; has its own git history).
+# Tracked separately / to be forked when we start modifying it in Phase 1.
+bridge/yrpp-spawner/
+
 # Game data / replays (large, licensed)
 replays/*.rep
 replays/raw/

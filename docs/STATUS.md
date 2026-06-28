@@ -11,11 +11,19 @@
 | 6 | Evaluation vs Brutal/Extreme + non-cheat audit | not started |
 
 ## Phase 0 checklist
-- [ ] Scaffold repo + git init
-- [ ] Clone `CnCNet/yrpp-spawner` (+ `YRpp` submodule) into `bridge/`
-- [ ] Confirm C++ toolchain (VS2022 Build Tools + C++ workload)
-- [ ] Build unmodified `CnCNet-Spawner.dll`
+- [x] Scaffold repo + git init
+- [x] Clone `CnCNet/yrpp-spawner` (+ `YRpp` submodule, HTTPS) into `bridge/yrpp-spawner`
+- [x] Confirm C++ toolchain — VS2022 BuildTools (MSBuild + MSVC 14.43.34808 + Win10 SDK 22621 + v143). cl.exe x86 present.
+- [x] Pin non-cheat injection API — `EventClass::OutList.Add()` @0x00A802C8 + ctor addrs (see bridge-contract.md)
+- [ ] **BLOCKED:** install ATL component (`atlbase.h`) — needed by YRpp `Interfaces.h`. CLI `modify` fails
+      ("product cannot be found": registered product 17.13.6 vs installer channel 17.14). **Use VS Installer GUI.**
+- [ ] Build `CnCNet-Spawner.dll` (Debug|Win32) via `scripts/build.ps1`
 - [ ] Inject into a local skirmish and confirm it launches
+
+### How to unblock ATL (GUI, reliable)
+Visual Studio Installer → **Visual Studio Build Tools 2022** → **Modify** → **Individual components**
+→ search "ATL" → check **"C++ ATL for latest v143 build tools (x86 & x64)"** → **Modify**.
+Then run `pwsh -File scripts/build.ps1`.
 
 ## Environment (verified)
 - Game: `C:\Program Files (x86)\Steam\steamapps\common\Command & Conquer Red Alert II\` (vanilla YR / CnCNet)
