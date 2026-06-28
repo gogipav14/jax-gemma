@@ -73,6 +73,18 @@ class ObsReader:
         s["n_own"], s["n_enemy"], s["n_factory"] = head[14], head[15], head[16]
         return s
 
+    def read_own(self, limit=None):
+        """Return own entities: dicts with unique_id, type_id, category, x, y, hp."""
+        n = struct.unpack("<H", self._bytes(OFF_COUNTS, 2))[0]  # n_own
+        n = min(n, N_OWN, limit) if limit else min(n, N_OWN)
+        out = []
+        for i in range(n):
+            uid, tid, x, y, cat, hp, st, gid = struct.unpack(
+                "<" + ENTITY_FMT, self._bytes(OFF_OWN + i * ENTITY_SIZE, ENTITY_SIZE))
+            out.append({"unique_id": uid, "type_id": tid, "category": _RTTI.get(cat, cat),
+                        "category_rtti": cat, "x": x, "y": y, "hp": hp})
+        return out
+
     def read_factories(self):
         """Return the list of own factories: dicts with category, current_type_id, progress, queue."""
         n = struct.unpack("<H", self._bytes(OFF_COUNTS + 4, 2))[0]  # n_factory
