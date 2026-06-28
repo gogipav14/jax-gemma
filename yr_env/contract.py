@@ -9,7 +9,7 @@ import enum
 
 # --- IPC header ---
 MAGIC = 0x59524252  # 'YRBR'
-VERSION = 0  # bump on any layout change; DLL asserts equality
+VERSION = 1  # bump on any layout change; must match Bridge.h BridgeContract::VERSION
 
 SHMEM_OBS_NAME = "Local\\yr_bridge_obs"
 SHMEM_ACT_NAME = "Local\\yr_bridge_act"
