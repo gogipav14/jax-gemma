@@ -34,9 +34,9 @@ bridge/**/*.ilk
 *.dll
 !*/keep.dll
 
-# Vendored upstream spawner (cloned from CnCNet/yrpp-spawner; has its own git history).
-# Tracked separately / to be forked when we start modifying it in Phase 1.
-bridge/yrpp-spawner/
+# bridge/yrpp-spawner is a git SUBMODULE -> gogipav14/yrpp-spawner (fork of CnCNet),
+# branch jax-gemma-bridge. Clone with:  git clone --recurse-submodules
+# (build artifacts inside it are ignored by the submodule's own .gitignore)
 
 # Game data / replays (large, licensed)
 replays/*.rep

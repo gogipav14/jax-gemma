@@ -1,0 +1,4 @@
+[submodule "bridge/yrpp-spawner"]
+	path = bridge/yrpp-spawner
+	url = https://github.com/gogipav14/yrpp-spawner.git
+	branch = jax-gemma-bridge
