@@ -1,0 +1,108 @@
+"""LLM 'commander' — the slow strategic thinking layer (Ollama-backed).
+
+Reads a game-state summary, asks a local Ollama model to REASON about strategy,
+and returns a structured directive (JSON) that the fast executor turns into
+EventClass/OutList actions (the non-cheating player path). Runs at a slow tick
+(~5-15s), NOT per frame, so we can afford a capable model.
+
+Decoupled from JAX/RL: talks to Ollama over HTTP (localhost:11434). Swap models
+by changing `model=` (gemma4 now; qwen2.5-coder:7b / qwen3.6:27b once pulled).
+
+Demo:  python commander/commander.py            # uses a sample early-game state
+       python commander/commander.py qwen2.5-coder:7b
+"""
+from __future__ import annotations
+
+import json
+import sys
+import urllib.request
+
+OLLAMA_CHAT = "http://localhost:11434/api/chat"
+
+# The commander plays FAIRLY — this mirrors the constraints our agent accepts vs.
+# the stock AI's cheats (see docs/ai-audit.md): serial production per queue, real
+# economy, fog of war. The model must win on strategy, not engine privileges.
+SYSTEM = """You are the strategic commander for a Command & Conquer: Yuri's Revenge player.
+You play FAIRLY, exactly like a human — NOT like the cheating AI:
+- ONE unit at a time per production queue (a War Factory builds one vehicle at a time).
+- REAL economy: you must build refineries and protect harvesters to earn credits.
+- FOG OF WAR: you only know enemy units you can currently see; scout to learn more.
+You think at a high level and emit a short strategic DIRECTIVE. A fast executor will
+carry it out. Be decisive and concrete. Output ONLY JSON matching this schema:
+{
+  "assessment": "<one sentence: read of the situation>",
+  "strategy": "rush | boom | tech | defend | harass",
+  "priority_build_order": ["<structure or unit>", "..."],   // next 4-6 items, in order
+  "army_composition": {"<unit>": <count>, "...": 0},          // the army to aim for
+  "stance": "aggressive | defensive | expand",
+  "objectives": ["<short actionable goal>", "..."],           // 2-4 goals this tick
+  "reasoning": "<2-3 sentences of chain-of-thought>"
+}"""
+
+
+def summarize_state(obs: dict) -> str:
+    """Turn an OBS dict (header + globals + counts) into a concise text briefing."""
+    g = obs.get("globals", obs)  # accept flat or nested
+    side = {0: "Allied", 1: "Soviet", 4: "Yuri"}.get(obs.get("side_index", g.get("side_index", -1)), "Unknown")
+    lines = [
+        f"Frame: {obs.get('frame_seq', '?')}   Faction: {side}   Map: {obs.get('map', '1v7 skirmish')}",
+        f"Credits: {g.get('credits', '?')}   Power: {g.get('power_output', 0)}/{g.get('power_drain', 0)} (out/drain)",
+        f"Your forces: {g.get('owned_buildings', 0)} buildings, {g.get('owned_units', 0)} vehicles, "
+        f"{g.get('owned_infantry', 0)} infantry, {g.get('owned_aircraft', 0)} aircraft, {g.get('owned_navy', 0)} naval",
+        f"Enemy units currently VISIBLE to you: {obs.get('n_enemy', g.get('n_enemy', 0))} "
+        f"(others are hidden by fog).",
+    ]
+    return "\n".join(lines)
+
+
+def think(obs: dict, model: str = "gemma4", timeout: int = 300) -> dict:
+    """Ask the model for a strategic directive. Returns a parsed dict."""
+    briefing = summarize_state(obs)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Current game state:\n{briefing}\n\nGive your directive as JSON."},
+        ],
+        "stream": False,
+        "format": "json",   # force structured output — key for a reliable agent
+        # think=False: gemma4/Qwen3.x are reasoning models — without this they spend the
+        # whole budget in the hidden 'thinking' channel and return empty content. We want
+        # the directive directly. (For a deliberate slow tick you could enable it + raise
+        # num_predict to let it reason first.)
+        "think": False,
+        "keep_alive": "10m",  # hold the model resident between ticks (no cold reload)
+        "options": {"temperature": 0.4, "num_predict": 600},
+    }
+    req = urllib.request.Request(
+        OLLAMA_CHAT, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        resp = json.loads(r.read())
+    content = resp["message"]["content"]
+    return json.loads(content)
+
+
+# A representative early-game OBS (the 1v7 Andalusia state our Phase-1 bridge actually read).
+SAMPLE_OBS = {
+    "frame_seq": 300, "side_index": 4, "map": "[8] Andalusia (1 human vs 7 AI)",
+    "globals": {
+        "credits": 10000, "power_output": 0, "power_drain": 0, "side_index": 4,
+        "owned_units": 6, "owned_buildings": 0, "owned_infantry": 7,
+        "owned_aircraft": 0, "owned_navy": 0,
+    },
+    "n_enemy": 3,
+}
+
+
+if __name__ == "__main__":
+    model = sys.argv[1] if len(sys.argv) > 1 else "gemma4"
+    print(f"=== Commander thinking with model '{model}' ===\n")
+    print("STATE BRIEFING:\n" + summarize_state(SAMPLE_OBS) + "\n")
+    try:
+        directive = think(SAMPLE_OBS, model=model)
+    except Exception as e:
+        print(f"[error] {e}\n(Is Ollama running and the model pulled? `ollama list`)")
+        sys.exit(1)
+    print("DIRECTIVE (the 'thinking' output):\n")
+    print(json.dumps(directive, indent=2))
