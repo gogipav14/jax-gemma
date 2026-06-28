@@ -93,6 +93,16 @@ class ActWriter:
         return self.send(self._pack(contract.ActionType.PLACE, category_rtti=contract.RTTIType.BUILDING_TYPE,
                                     is_naval=1 if naval else 0, type_id=building_type_id, cell_x=x, cell_y=y))
 
+    def deploy(self, unique_id: int):
+        """Deploy a deployable unit (MCV -> Construction Yard)."""
+        return self.send(self._pack(contract.ActionType.DEPLOY, target_unique=unique_id))
+
+    def sell(self, unique_id: int):
+        return self.send(self._pack(contract.ActionType.SELL, target_unique=unique_id))
+
+    def set_primary(self, unique_id: int):
+        return self.send(self._pack(contract.ActionType.SET_PRIMARY, target_unique=unique_id))
+
     def move(self, unique_id: int, x: int, y: int):
         return self.send(self._pack(contract.ActionType.GROUP_MOVE, target_unique=unique_id, cell_x=x, cell_y=y))
 

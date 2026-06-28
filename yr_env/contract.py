@@ -61,6 +61,7 @@ class ActionType(enum.IntEnum):
     GROUP_FORM = 7    # (re)assign visible own units to group_id
     SUPERWEAPON = 8   # fire ready superweapon type_id at (cell_x, cell_y)
     STANCE = 9        # set group_id stance
+    DEPLOY = 10       # deploy a deployable unit (MCV -> Construction Yard) by target_unique
 
 
 # Fixed caps for padded NN tensors (tune later against real games).
