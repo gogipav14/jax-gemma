@@ -59,9 +59,9 @@ def snapshot(obs, cat, lut, ctx):
     def own_has(suf):
         return _suffix_present(blds, cat, suf) if prefix else False
 
-    # classify enemies by role via the (category,index)->id reverse map
+    # classify enemies by role via the (category,index)->id reverse map (catalog keys are lowercase)
     def role(e):
-        eid = lut.get(("Unit", e["type_id"]), lut.get(("Building", e["type_id"]), ""))
+        eid = lut.get((e["category"].lower(), e["type_id"]), "")
         if eid in ENEMY_ARTILLERY:
             return "artillery"
         if eid in ENEMY_AIR:
@@ -73,7 +73,7 @@ def snapshot(obs, cat, lut, ctx):
     near = []
     if anchor:
         ax, ay = anchor
-        near = [e for e in enemies if abs(e["x"] - ax) + abs(e["y"] - ay) < 35]
+        near = [e for e in enemies if abs(e["x"] - ax) + abs(e["y"] - ay) < 22]   # genuinely AT the base
 
     return {
         "credits": s.get("credits", 0),
@@ -90,24 +90,27 @@ def snapshot(obs, cat, lut, ctx):
 
 
 # rule table: (name, category, condition(state)->bool, macro, payload_key, base_weight)
-# higher weight wins among eligible; survival outranks offense; the V3 answer is the top reactive rule.
+# Principle: ESTABLISH the economy first (ambient enemies don't stop the build-order); respond to
+# REAL threats (detected artillery, or a genuine push AT the base once a War Factory exists); keep
+# an army; attack only when strong and safe. Higher effective weight wins among eligible rules.
 RULES = [
     ("deploy",       "deploy",  lambda s: s["n_bld"] == 0,                                   "DEPLOY_MCV",        None,        1000),
-    # --- reactive survival (preempt economy/offense when threatened) ---
-    ("sortie_v3",    "counter", lambda s: s["enemy_arty"] and s["n_army"] >= 2,              "ANTI_ARTY_SORTIE",  "artillery", 220),
-    ("train_drone",  "counter", lambda s: (s["enemy_arty"] or s["enemy_near"]) and s["has_weap"], "TRAIN_ANTIARMOR", None,  200),
-    ("build_aa",     "aa",      lambda s: s["enemy_air"] and s["has_power"],                 "BUILD_AA",          None,        180),
-    ("base_defense", "defense", lambda s: s["enemy_near"] and s["n_defense"] < 4 and s["has_power"], "BUILD_DEFENSE", None,  160),
-    ("recall",       "defense", lambda s: s["enemy_near"] and s["n_army"] >= 2,              "DEFEND",            None,        140),
-    # --- economy / build-order escalation (when not under immediate pressure) ---
-    ("power",        "economy", lambda s: not s["has_power"] or s["power_surplus"] < 50,      "BUILD_POWER",      None,        90),
-    ("refinery",     "economy", lambda s: s["n_refn"] < 2,                                    "BUILD_REFINERY",   None,        85),
-    ("barracks",     "economy", lambda s: not s["has_barracks"],                              "BUILD_BARRACKS",   None,        80),
-    ("warfactory",   "tech",    lambda s: not s["has_weap"],                                  "BUILD_WARFACTORY", None,        78),
-    ("radar",        "tech",    lambda s: s["has_weap"] and not s["has_radar"],               "BUILD_RADAR",      None,        70),
-    # --- army + offense (lowest; only when base is up and it's safe) ---
-    ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 8,                  "TRAIN_TANK",       None,        45),
-    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 8 and not s["enemy_near"], "ATTACK",   "nearest",   30),
+    # --- artillery is THE killer: detected V3/Prism gets the top reactive response at any range ---
+    ("sortie_v3",    "counter", lambda s: s["enemy_arty"] and s["n_army"] >= 3,              "ANTI_ARTY_SORTIE",  "artillery", 200),
+    ("train_drone",  "counter", lambda s: s["enemy_arty"] and s["has_weap"],                 "TRAIN_ANTIARMOR",   None,        190),
+    ("build_aa",     "aa",      lambda s: s["enemy_air"] and s["has_power"],                 "BUILD_AA",          None,        130),
+    # --- economy / build-order: establish the base; NOT preempted by ambient enemies ---
+    ("power",        "economy", lambda s: not s["has_power"] or s["power_surplus"] < 50,      "BUILD_POWER",      None,        120),
+    ("refinery",     "economy", lambda s: s["n_refn"] < 2,                                    "BUILD_REFINERY",   None,        110),
+    ("barracks",     "economy", lambda s: not s["has_barracks"],                              "BUILD_BARRACKS",   None,        100),
+    ("warfactory",   "tech",    lambda s: not s["has_weap"],                                  "BUILD_WARFACTORY", None,        98),
+    ("radar",        "tech",    lambda s: s["has_weap"] and not s["has_radar"],               "BUILD_RADAR",      None,        80),
+    # --- base under a REAL push (only after a War Factory exists, so economy isn't starved) ---
+    ("base_defense", "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 3 and s["n_defense"] < 4, "BUILD_DEFENSE", None, 95),
+    ("recall",       "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 3 and s["n_army"] >= 2, "DEFEND",   None,        70),
+    # --- army + offense ---
+    ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 8,                  "TRAIN_TANK",       None,        90),
+    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 8 and not s["enemy_near"], "ATTACK",   "nearest",   40),
 ]
 
 
