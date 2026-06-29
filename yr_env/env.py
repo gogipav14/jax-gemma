@@ -26,6 +26,14 @@ GLOBAL_KEYS = ("credits", "power_output", "power_drain", "side_index", "owned_un
 FAC_CATS = ("Building", "Unit", "Infantry", "Aircraft", "Naval")
 OBS_DIM = len(GLOBAL_KEYS) + 3 + len(FAC_CATS)   # globals + (n_own,n_enemy,n_factory) + active-factory/category
 
+# Per-feature normalization: divide raw obs by a typical scale so no feature (esp. credits ~1e5)
+# dominates the network input. Traces store RAW values; normalize() is applied at train/inference.
+NORM = np.array([1e5, 100, 100, 6, 20, 10, 20, 5, 5, 30, 10, 5, 3, 3, 3, 3, 3], np.float32)
+
+
+def normalize(obs):
+    return np.asarray(obs, np.float32) / NORM
+
 
 def encode_obs(state: dict, factories: list) -> np.ndarray:
     g = [float(state.get(k, 0)) for k in GLOBAL_KEYS]

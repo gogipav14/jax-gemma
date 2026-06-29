@@ -18,7 +18,11 @@ import jax.numpy as jnp
 from jax import random
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "yr_env"))
 from policy import init_params, forward          # noqa: E402
+from env import NORM                              # noqa: E402  (per-feature obs scale)
+
+_NORM = jnp.asarray(NORM)
 
 try:
     import optax
@@ -76,6 +80,7 @@ def accuracy(params, obs, y):
 def train(steps=400, lr=1e-2, n=512, data=None):
     k_d, k_p = random.split(random.PRNGKey(0))
     obs, y = data if data is not None else make_data(k_d, n)
+    obs = obs / _NORM                              # normalize so credits (~1e5) don't swamp the net
     params = init_params(k_p, obs.shape[1])
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
     if _HAS_OPTAX:
