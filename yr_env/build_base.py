@@ -43,6 +43,20 @@ def building_ready(obs):
     return None
 
 
+def produce_retry(act, rtti, idx, timeout=40):
+    """Produce, retrying on REJECTED_CANBUILD (prereq still constructing) until it sticks."""
+    t0 = time.time()
+    r = None
+    while time.time() - t0 < timeout:
+        r = act.produce(rtti, idx)
+        if r and r[0] == 0:                  # ACT_OK
+            return r
+        if r and r[0] == 2:                  # REJECTED_CANBUILD -> prereq not ready yet
+            time.sleep(2); continue
+        return r                              # NOFACTORY / BAD_* -> don't retry
+    return r
+
+
 def find_and_place(act, idx, anchor):
     cx, cy = anchor
     for r in range(2, 11):
@@ -56,7 +70,9 @@ def find_and_place(act, idx, anchor):
     return None
 
 
-def main():
+def main(order_override=None):
+    """order_override: optional list of (suffix, label), e.g. from an LLM build order
+    mapped to faction suffixes. Defaults to a standard Power->Refinery->Barracks->WarFactory."""
     obs, act, cat = connect(), ActWriter(), Catalog()
 
     # 1) ensure a Construction Yard (deploy MCV if we have none)
@@ -88,8 +104,10 @@ def main():
     print(f"Construction Yard at {anchor}; faction prefix '{prefix}'")
     print(">>> WATCH: Power Plant -> Refinery -> War Factory will appear one by one.\n")
 
-    # 2) build sequence
-    for suffix, label in [("POWR", "Power Plant"), ("REFN", "Refinery"), ("WEAP", "War Factory")]:
+    # 2) build sequence (retry-produce handles prereqs still under construction)
+    order = (order_override or
+             [("POWR", "Power Plant"), ("REFN", "Refinery"), ("HAND", "Barracks"), ("WEAP", "War Factory")])
+    for suffix, label in order:
         bid = prefix + suffix
         e = cat.by_id.get(bid)
         if not e:
@@ -97,15 +115,18 @@ def main():
         idx = e["index"]
         before = len(own_buildings(obs))
         print(f"  producing {label} ({bid}, idx {idx})...")
-        print("    produce:", act.produce(BUILDINGTYPE, idx))
+        pr = produce_retry(act, BUILDINGTYPE, idx)
+        print(f"    produce: {pr}")
+        if not pr or pr[0] != 0:
+            print(f"    {label}: could not start ({pr}); skipping"); continue
         # wait until ready to place
         ready = False
-        for _ in range(90):
+        for _ in range(40):
             if building_ready(obs):
                 ready = True; break
             time.sleep(1)
         if not ready:
-            print(f"    {label}: never became ready (CanBuild / power / funds?)"); continue
+            print(f"    {label}: produced but never ready to place"); continue
         cell = find_and_place(act, idx, anchor)
         if not cell:
             print(f"    {label}: no valid placement cell found"); continue
