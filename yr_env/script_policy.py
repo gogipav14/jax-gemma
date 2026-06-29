@@ -32,6 +32,7 @@ ANTI_ARMOR_UNIT = {"NA": "DRON", "GA": "TNKD", "YA": "LTNK"}     # Terror Drone 
 AA_UNIT = {"NA": "HTK", "GA": "FV", "YA": "YTNK"}                # Flak Track / IFV
 ENEMY_ARTILLERY = {"V3", "SREF", "DRED", "CARRIER"}             # V3 Launcher, Prism, Dreadnought
 ENEMY_AIR = {"ORCA", "BEAG", "ZEP", "JUMPJET", "KIROV", "SHAD"}
+ECON_IDS = {"HARV", "HORV", "CMIN", "CMON", "SMIN", "AMCV", "SMCV", "PCV", "YMCV"}  # harvesters + MCVs: never fight/scout
 
 PROFILES = {                                                     # category weight multipliers
     "balanced": {},
@@ -53,7 +54,9 @@ def snapshot(obs, cat, lut, ctx):
     s = obs.read_state() or {}
     own, enemies = obs.read_own(), obs.read_enemy()
     blds = [u for u in own if u["category"] == "Building"]
-    units = [u for u in own if u["category"] == "Unit" and (u["x"] or u["y"])]
+    econ = ctx.get("econ_ids", set())                       # harvesters + MCVs: NEVER send to fight/scout
+    combat = [u for u in own if u["category"] == "Unit" and u["type_id"] not in econ]
+    units = [u for u in combat if (u["x"] or u["y"])]       # positioned combat units (commandable)
     prefix = ctx.get("prefix")
 
     def own_has(suf):
@@ -73,12 +76,12 @@ def snapshot(obs, cat, lut, ctx):
     near = []
     if anchor:
         ax, ay = anchor
-        near = [e for e in enemies if abs(e["x"] - ax) + abs(e["y"] - ay) < 22]   # genuinely AT the base
+        near = [e for e in enemies if abs(e["x"] - ax) + abs(e["y"] - ay) < 35]   # threat near the base
 
     return {
         "credits": s.get("credits", 0),
         "power_surplus": s.get("power_output", 0) - s.get("power_drain", 0),
-        "n_bld": len(blds), "n_army": len(units), "n_enemy": len(enemies),
+        "n_bld": len(blds), "n_army": len(combat), "n_enemy": len(enemies),
         "has_power": own_has("POWR"), "n_refn": sum(1 for b in blds if (id_by_index(cat, "building", b["type_id"]) or "")[2:6] == "REFN"),
         "has_barracks": own_has("HAND") or own_has("PILE") or own_has("BRCK"),
         "has_weap": own_has("WEAP"), "has_radar": own_has("RADR") or own_has("AIRC"),
@@ -262,7 +265,9 @@ def make_ctx(obs, cat):
     return {"anchor": (bld[0]["x"], bld[0]["y"]) if bld else None,
             "prefix": (id_by_index(cat, "building", bld[0]["type_id"]) or "GA")[:2] if bld else None,
             "mcv_ids": {e["index"] for e in cat.by_id.values()
-                        if e["category"] == "unit" and ("MCV" in e["id"] or "MCV" in e["ui_name"])}}
+                        if e["category"] == "unit" and ("MCV" in e["id"] or "MCV" in e["ui_name"])},
+            "econ_ids": {e["index"] for e in cat.by_id.values()
+                         if e["category"] == "unit" and (e["id"] in ECON_IDS or "MCV" in e["id"])}}
 
 
 def main(profile="balanced", max_ticks=45, launch=True):
