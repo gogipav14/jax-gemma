@@ -107,10 +107,10 @@ RULES = [
     ("radar",        "tech",    lambda s: s["has_weap"] and not s["has_radar"],               "BUILD_RADAR",      None,        80),
     # --- base under a REAL push (only after a War Factory exists, so economy isn't starved) ---
     ("base_defense", "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 3 and s["n_defense"] < 4, "BUILD_DEFENSE", None, 95),
-    ("recall",       "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 3 and s["n_army"] >= 2, "DEFEND",   None,        70),
+    ("engage",       "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 5 and s["n_army"] >= 4, "DEFEND", None,        95),
     # --- army + offense ---
-    ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 8,                  "TRAIN_TANK",       None,        90),
-    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 8 and not s["enemy_near"], "ATTACK",   "nearest",   40),
+    ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 12,                 "TRAIN_TANK",       None,        90),
+    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 12,                "ATTACK",   "nearest",   100),
 ]
 
 
@@ -185,10 +185,22 @@ def execute(macro, payload, obs, act, cat, ctx, state):
     if macro == "TRAIN_ANTIARMOR":
         return _train(act, cat, ANTI_ARMOR_UNIT.get(p, "DRON"))
     if macro == "DEFEND":
+        # ACTIVE defense: send the army to DESTROY the nearest attackers (attack-move = move + fire),
+        # not passively huddle at the ConYard. This is visible combat on screen.
+        units = state["units"]
+        if not units:
+            return "no-army"
+        near = state["enemy_near"] or obs.read_enemy()
+        if near:
+            ax, ay = ctx["anchor"]
+            t = min(near, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
+            for u in units:
+                act.attack_move(u["unique_id"], t["x"], t["y"])
+            return f"ENGAGE {len(units)} units -> attackers at ({t['x']},{t['y']})"
         ax, ay = ctx["anchor"]
-        for u in state["units"]:
+        for u in units:
             act.attack_move(u["unique_id"], ax, ay)
-        return f"recalled {len(state['units'])} to base"
+        return f"hold base x{len(units)}"
     if macro == "ANTI_ARTY_SORTIE":
         arty = state["enemy_arty"]
         if not arty or not state["units"]:

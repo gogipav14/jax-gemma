@@ -28,6 +28,23 @@ from commander import command                          # noqa: E402
 STRAT2PROFILE = {"rush": "rush", "harass": "rush", "boom": "boom", "tech": "boom",
                  "defend": "turtle", "balanced": "balanced"}
 COMMANDER_SECONDS = 20          # re-issue strategic orders ~every N seconds (wall clock)
+LOG = os.path.join(os.path.dirname(__file__), "data", "commander_play.log")
+
+
+class _Tee:
+    """Mirror stdout to the console AND a log file, flushing each write (so a watcher window
+    and an external reader both see orders live)."""
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            st.write(s)
+            st.flush()
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
 
 
 def briefing(s, snap):
@@ -63,6 +80,8 @@ def print_orders(model, tick, brief, d, profile):
 
 
 def main(model="gemma4", max_ticks=55, launch=True):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    sys.stdout = _Tee(sys.__stdout__, open(LOG, "w", encoding="utf-8"))
     if launch:
         sys.path.insert(0, os.path.dirname(__file__))
         from commander_build import launch_game
