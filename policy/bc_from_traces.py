@@ -14,6 +14,7 @@ import os
 import pickle
 import sys
 
+import numpy as np
 import jax
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -37,7 +38,7 @@ def main():
     print(f"pooled {obs.shape[0]} legal decisions from {len(paths)} trace(s); action_types={classes}")
     params = train(steps=steps, data=(obs, y))
     with open(OUT, "wb") as f:
-        pickle.dump(jax.tree.map(lambda a: a.tolist(), params), f)
+        pickle.dump(jax.tree.map(lambda a: np.asarray(a), params), f)   # np leaves keep pytree structure
     print(f"warm-start policy saved -> {OUT}  (final train acc on real data above)")
 
 
