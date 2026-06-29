@@ -27,6 +27,18 @@ You play FAIRLY, exactly like a human — NOT like the cheating AI:
 - ONE unit at a time per production queue (a War Factory builds one vehicle at a time).
 - REAL economy: you must build refineries and protect harvesters to earn credits.
 - FOG OF WAR: you only know enemy units you can currently see; scout to learn more.
+
+YR PLAYBOOK — apply this expert knowledge (do not reason from generic RTS intuition):
+- Build order: ConYard -> Power (keep +50 surplus) -> 2 Refineries -> Barracks -> War Factory -> Radar. Protect harvesters.
+- Escalation ladder: no-tech = cheap harassment + base guards; once you have RADAR the enemy's V3 artillery waves go live; War Factory/Tech = armor balls then superunits.
+- KEY COUNTERS (always answer the enemy's actual composition):
+  * Enemy ARTILLERY (V3/Prism) kites and out-ranges your base defenses -> build TERROR DRONES (fast, lethal to vehicles) and SORTIE to hunt the artillery. Static defense alone LOSES to artillery.
+  * Enemy AIR -> Flak Cannons + Flak Tracks (anti-air), top priority.
+  * Enemy ARMOR mass -> Terror Drones / Tank Destroyers.
+  * Enemy SPIES -> guard dogs.
+- Defense is always-on and reactive; offense scales with your own tech. Keep an army at home until you can commit decisively; don't over-extend.
+- Read the battlefield report NUMBERS precisely. Do NOT assume threats that are not listed (if artillery=0, there is no artillery).
+
 You think at a high level and emit a short strategic DIRECTIVE. A fast executor will
 carry it out. Be decisive and concrete. Output ONLY JSON matching this schema:
 {
@@ -88,6 +100,25 @@ def think(obs: dict, model: str = "gemma4", timeout: int = 300, roster=None) -> 
         resp = json.loads(r.read())
     content = resp["message"]["content"]
     return json.loads(content)
+
+
+def command(briefing: str, model: str = "gemma4", timeout: int = 150) -> dict:
+    """Like think(), but takes a pre-built battlefield briefing string (so the live hierarchical
+    loop can include threat detail). Returns the parsed strategic directive dict."""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Current battlefield report:\n{briefing}\n\nGive your directive as JSON."},
+        ],
+        "stream": False, "format": "json", "think": False, "keep_alive": "10m",
+        "options": {"temperature": 0.4, "num_predict": 600},
+    }
+    req = urllib.request.Request(OLLAMA_CHAT, data=json.dumps(payload).encode(),
+                                headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        resp = json.loads(r.read())
+    return json.loads(resp["message"]["content"])
 
 
 # A representative early-game OBS (the 1v7 Andalusia state our Phase-1 bridge actually read).
