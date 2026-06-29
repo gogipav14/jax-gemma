@@ -85,6 +85,7 @@ def snapshot(obs, cat, lut, ctx):
         "n_defense": sum(1 for b in blds if (id_by_index(cat, "building", b["type_id"]) or "") in
                          (DEFENSE_BLDG.get(prefix, []) + [AA_BLDG.get(prefix, "")])),
         "enemy_arty": enemy_arty, "enemy_air": enemy_air, "enemy_near": near,
+        "enemy_buildings": [e for e in enemies if e.get("category") == "Building" and (e["x"] or e["y"])],
         "units": units, "anchor": anchor, "prefix": prefix,
     }
 
@@ -108,14 +109,22 @@ RULES = [
     # --- base under a REAL push (only after a War Factory exists, so economy isn't starved) ---
     ("base_defense", "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 3 and s["n_defense"] < 4, "BUILD_DEFENSE", None, 95),
     ("engage",       "defense", lambda s: s["has_weap"] and len(s["enemy_near"]) >= 5 and s["n_army"] >= 4, "DEFEND", None,        95),
-    # --- army + offense ---
+    # --- scout to FIND the enemy base (so we can actually push to win), then mass + attack ---
+    ("scout",        "army",    lambda s: s["has_weap"] and s["n_army"] >= 3 and not s["enemy_buildings"]
+                                          and len(s["enemy_near"]) < 5 and s.get("scout_ok"), "SCOUT", None, 92),
     ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 12,                 "TRAIN_TANK",       None,        90),
-    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 12,                "ATTACK",   "nearest",   100),
+    ("attack",       "attack",  lambda s: s["has_weap"] and ((s["enemy_buildings"] and s["n_army"] >= 8)
+                                                             or s["n_army"] >= 12),           "ATTACK",   None,        100),
 ]
+
+_MEM = {"tick": -1, "last_scout": -99}     # scout-cooldown memory (decide() is otherwise stateless)
 
 
 def decide(state, profile):
     mult = PROFILES.get(profile, {})
+    _MEM["tick"] += 1
+    state = dict(state)
+    state["scout_ok"] = (_MEM["tick"] - _MEM["last_scout"]) >= 8     # scout at most ~every 8 ticks
     best = None
     for name, cat_, cond, macro, payload, w in RULES:
         try:
@@ -129,6 +138,8 @@ def decide(state, profile):
             best = (eff, name, macro, payload)
     if not best:
         return "NOOP", None, "idle"
+    if best[2] == "SCOUT":
+        _MEM["last_scout"] = _MEM["tick"]
     return best[2], best[3], best[1]
 
 
@@ -210,19 +221,39 @@ def execute(macro, payload, obs, act, cat, ctx, state):
         for u in state["units"]:
             act.attack_move(u["unique_id"], t["x"], t["y"])
         return f"SORTIE {len(state['units'])} units -> V3 at ({t['x']},{t['y']})"
+    if macro == "SCOUT":
+        units = state["units"]
+        if not units:
+            return "no-unit"
+        ax, ay = ctx["anchor"]
+        enemies = obs.read_enemy()
+        if enemies:                                        # probe BEYOND the skirmishers toward their base
+            ex = sum(e["x"] for e in enemies) / len(enemies)
+            ey = sum(e["y"] for e in enemies) / len(enemies)
+            tx, ty = int(ax + (ex - ax) * 2.2), int(ay + (ey - ay) * 2.2)
+        else:                                              # nothing seen -> probe the far map
+            tx, ty = (ax + 100 if ax < 128 else ax - 100), (ay + 100 if ay < 128 else ay - 100)
+        tx, ty = max(2, tx), max(2, ty)
+        for u in units[:2]:                                # send a couple of scouts, not the whole army
+            act.move(u["unique_id"], tx, ty)
+        return f"SCOUT {min(2, len(units))} -> ({tx},{ty})"
     if macro == "ATTACK":
-        units, enemies = state["units"], obs.read_enemy()
+        units = state["units"]
         if not units:
             return "no-army"
         ax, ay = ctx["anchor"]
-        if enemies:
+        ebld, enemies = state.get("enemy_buildings") or [], obs.read_enemy()
+        if ebld:                                           # we found the enemy BASE -> march on it (the win)
+            t = min(ebld, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
+            tx, ty, what = t["x"], t["y"], "enemy BASE"
+        elif enemies:
             t = min(enemies, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
-            tx, ty = t["x"], t["y"]
+            tx, ty, what = t["x"], t["y"], "enemy force"
         else:
-            tx, ty = (ax // 2 if ax > 80 else ax + 80), ay
+            tx, ty, what = (ax // 2 if ax > 80 else ax + 90), ay, "map interior"
         for u in units:
             act.attack_move(u["unique_id"], tx, ty)
-        return f"attack ({tx},{ty}) x{len(units)}"
+        return f"ATTACK {what} ({tx},{ty}) x{len(units)}"
     return "unknown"
 
 
