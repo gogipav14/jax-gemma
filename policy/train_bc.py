@@ -47,6 +47,21 @@ def make_data(key, n, obs_dim=17):
     return obs, expert_action(obs)
 
 
+def load_traces(paths, keep_failed=False):
+    """Load real recorded traces (.npz from record_traces.py) -> (obs, action_type).
+    By default keeps only legal/successful (result==OK) decisions for imitation."""
+    import numpy as np
+    O, Y = [], []
+    for p in paths:
+        d = np.load(p)
+        mask = np.ones(len(d["result"]), bool) if keep_failed else (d["result"] == 0)
+        O.append(np.asarray(d["obs"])[mask])
+        Y.append(np.asarray(d["act"])[mask, 0])         # column 0 = action_type
+    obs = jnp.asarray(np.concatenate(O), jnp.float32)
+    y = jnp.asarray(np.concatenate(Y).astype("int32"))
+    return obs, y
+
+
 def loss_fn(params, obs, y):
     logits, _ = forward(params, obs)
     logp = jax.nn.log_softmax(logits)
@@ -58,9 +73,9 @@ def accuracy(params, obs, y):
     return jnp.mean((jnp.argmax(logits, -1) == y).astype(jnp.float32))
 
 
-def train(steps=400, lr=1e-2, n=512):
+def train(steps=400, lr=1e-2, n=512, data=None):
     k_d, k_p = random.split(random.PRNGKey(0))
-    obs, y = make_data(k_d, n)
+    obs, y = data if data is not None else make_data(k_d, n)
     params = init_params(k_p, obs.shape[1])
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
     if _HAS_OPTAX:
@@ -76,9 +91,18 @@ def train(steps=400, lr=1e-2, n=512):
             params = jax.tree.map(lambda p, g: p - lr * g, params, grads)
         if step % 100 == 0 or step == steps - 1:
             print(f"  step {step:4d}  loss={float(loss):.4f}  acc={float(accuracy(params, obs, y)):.3f}")
-    print(f"FINAL acc={float(accuracy(params, obs, y)):.3f}  -> the policy LEARNED the expert mapping (CPU, JAX)")
+    print(f"FINAL acc={float(accuracy(params, obs, y)):.3f}  -> policy trained (CPU, JAX)")
     return params
 
 
 if __name__ == "__main__":
-    train()
+    paths = [a for a in sys.argv[1:] if a.endswith(".npz")]
+    if paths:
+        obs, y = load_traces(paths)
+        print(f"loaded {obs.shape[0]} real transitions from {len(paths)} trace(s); "
+              f"action_types present: {sorted(set(int(v) for v in y))}")
+        train(data=(obs, y))
+    else:
+        print("(no trace .npz given -> training on the synthetic expert; "
+              "record real traces with yr_env/record_traces.py)")
+        train()

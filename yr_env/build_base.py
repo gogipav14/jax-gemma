@@ -92,11 +92,16 @@ def find_and_place(act, idx, anchor):
     return None
 
 
-def main(order_override=None, n_tanks=0, attack=False):
+def main(order_override=None, n_tanks=0, attack=False, obs=None, act=None):
     """order_override: optional list of readable building names (e.g. from an LLM build order).
     n_tanks: after the base, produce this many main battle tanks from the War Factory.
-    attack: after building the army, attack-move it toward a visible enemy (or scout out)."""
-    obs, act, cat = connect(), ActWriter(), Catalog()
+    attack: after building the army, attack-move it toward a visible enemy (or scout out).
+    obs/act: optional injected bridge IO (e.g. a RecordingActWriter for Phase-4b trace
+    capture); created — and closed — here only if the caller doesn't supply them."""
+    own_io = obs is None
+    obs = obs or connect()
+    act = act or ActWriter()
+    cat = Catalog()
 
     # 1) ensure a Construction Yard (deploy MCV if we have none)
     if not own_buildings(obs):
@@ -208,7 +213,8 @@ def main(order_override=None, n_tanks=0, attack=False):
             act.attack_move(u["unique_id"], tx, ty)
         print(f"  ordered {len(tanks)} units to attack-move.")
 
-    obs.close(); act.close()
+    if own_io:
+        obs.close(); act.close()
 
 
 if __name__ == "__main__":
