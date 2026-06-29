@@ -1,0 +1,258 @@
+"""The cheat-free script PRIOR policy: the stock 'Extreme AI' condition->action brain, ported into
+our non-cheating macro space (see docs/stock-ai-blueprint.md).
+
+Unlike build_base (a fixed build sequence) and play_policy (a 1-trace NN), this is a *reactive
+weighted policy*: every tick it snapshots real game state (own tech + enemy composition, read with
+full ObsReader access), evaluates a rule table (condition -> macro at weight), and executes the
+highest-weighted eligible macro. It KEEPS the stock AI's strategy (escalation ladder, reactive
+counters, the V3 answer) and DROPS the cheats (serial production, real economy, fog — all enforced
+by going through EventClass/OutList).
+
+A STRATEGY PROFILE scales rule-category weights -> this is the knob each LLM commander turns to
+produce a posterior (boom / rush / turtle) over the shared prior.
+
+    PYTHONPATH=yr_env;commander  python yr_env/script_policy.py [profile]   # live match required
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+
+from read_obs import ObsReader
+from write_act import ActWriter
+from catalog import Catalog
+from build_base import (BUILDINGTYPE, UNITTYPE, MAIN_TANK, name_to_suffix, produce_retry,
+                        find_and_place, building_ready, own_buildings, id_by_index, connect)
+
+# --- faction toolkits (Soviet 'NA' solid; others best-effort, resolved against the catalog) ---
+DEFENSE_BLDG = {"NA": ["TESLA", "NALASR"], "GA": ["ATESLA", "GAPILL"], "YA": ["YAGGUN", "NATBNK"]}
+AA_BLDG = {"NA": "NAFLAK", "GA": "GASAM", "YA": "YAGGUN"}
+ANTI_ARMOR_UNIT = {"NA": "DRON", "GA": "TNKD", "YA": "LTNK"}     # Terror Drone / Tank Destroyer
+AA_UNIT = {"NA": "HTK", "GA": "FV", "YA": "YTNK"}                # Flak Track / IFV
+ENEMY_ARTILLERY = {"V3", "SREF", "DRED", "CARRIER"}             # V3 Launcher, Prism, Dreadnought
+ENEMY_AIR = {"ORCA", "BEAG", "ZEP", "JUMPJET", "KIROV", "SHAD"}
+
+PROFILES = {                                                     # category weight multipliers
+    "balanced": {},
+    "boom":   {"economy": 1.5, "tech": 1.4, "attack": 0.7},
+    "rush":   {"army": 1.5, "attack": 1.6, "economy": 0.8, "defense": 0.8},
+    "turtle": {"defense": 1.6, "aa": 1.5, "counter": 1.5, "attack": 0.5},
+}
+
+
+def _lookup(cat):
+    return {(e["category"], e["index"]): e["id"] for e in cat.by_id.values()}
+
+
+def _suffix_present(blds, cat, suffix):
+    return any((id_by_index(cat, "building", b["type_id"]) or "")[2:6] == suffix for b in blds)
+
+
+def snapshot(obs, cat, lut, ctx):
+    s = obs.read_state() or {}
+    own, enemies = obs.read_own(), obs.read_enemy()
+    blds = [u for u in own if u["category"] == "Building"]
+    units = [u for u in own if u["category"] == "Unit" and (u["x"] or u["y"])]
+    prefix = ctx.get("prefix")
+
+    def own_has(suf):
+        return _suffix_present(blds, cat, suf) if prefix else False
+
+    # classify enemies by role via the (category,index)->id reverse map
+    def role(e):
+        eid = lut.get(("Unit", e["type_id"]), lut.get(("Building", e["type_id"]), ""))
+        if eid in ENEMY_ARTILLERY:
+            return "artillery"
+        if eid in ENEMY_AIR:
+            return "air"
+        return "other"
+    enemy_arty = [e for e in enemies if role(e) == "artillery"]
+    enemy_air = [e for e in enemies if role(e) == "air"]
+    anchor = ctx.get("anchor")
+    near = []
+    if anchor:
+        ax, ay = anchor
+        near = [e for e in enemies if abs(e["x"] - ax) + abs(e["y"] - ay) < 35]
+
+    return {
+        "credits": s.get("credits", 0),
+        "power_surplus": s.get("power_output", 0) - s.get("power_drain", 0),
+        "n_bld": len(blds), "n_army": len(units), "n_enemy": len(enemies),
+        "has_power": own_has("POWR"), "n_refn": sum(1 for b in blds if (id_by_index(cat, "building", b["type_id"]) or "")[2:6] == "REFN"),
+        "has_barracks": own_has("HAND") or own_has("PILE") or own_has("BRCK"),
+        "has_weap": own_has("WEAP"), "has_radar": own_has("RADR") or own_has("AIRC"),
+        "n_defense": sum(1 for b in blds if (id_by_index(cat, "building", b["type_id"]) or "") in
+                         (DEFENSE_BLDG.get(prefix, []) + [AA_BLDG.get(prefix, "")])),
+        "enemy_arty": enemy_arty, "enemy_air": enemy_air, "enemy_near": near,
+        "units": units, "anchor": anchor, "prefix": prefix,
+    }
+
+
+# rule table: (name, category, condition(state)->bool, macro, payload_key, base_weight)
+# higher weight wins among eligible; survival outranks offense; the V3 answer is the top reactive rule.
+RULES = [
+    ("deploy",       "deploy",  lambda s: s["n_bld"] == 0,                                   "DEPLOY_MCV",        None,        1000),
+    # --- reactive survival (preempt economy/offense when threatened) ---
+    ("sortie_v3",    "counter", lambda s: s["enemy_arty"] and s["n_army"] >= 2,              "ANTI_ARTY_SORTIE",  "artillery", 220),
+    ("train_drone",  "counter", lambda s: (s["enemy_arty"] or s["enemy_near"]) and s["has_weap"], "TRAIN_ANTIARMOR", None,  200),
+    ("build_aa",     "aa",      lambda s: s["enemy_air"] and s["has_power"],                 "BUILD_AA",          None,        180),
+    ("base_defense", "defense", lambda s: s["enemy_near"] and s["n_defense"] < 4 and s["has_power"], "BUILD_DEFENSE", None,  160),
+    ("recall",       "defense", lambda s: s["enemy_near"] and s["n_army"] >= 2,              "DEFEND",            None,        140),
+    # --- economy / build-order escalation (when not under immediate pressure) ---
+    ("power",        "economy", lambda s: not s["has_power"] or s["power_surplus"] < 50,      "BUILD_POWER",      None,        90),
+    ("refinery",     "economy", lambda s: s["n_refn"] < 2,                                    "BUILD_REFINERY",   None,        85),
+    ("barracks",     "economy", lambda s: not s["has_barracks"],                              "BUILD_BARRACKS",   None,        80),
+    ("warfactory",   "tech",    lambda s: not s["has_weap"],                                  "BUILD_WARFACTORY", None,        78),
+    ("radar",        "tech",    lambda s: s["has_weap"] and not s["has_radar"],               "BUILD_RADAR",      None,        70),
+    # --- army + offense (lowest; only when base is up and it's safe) ---
+    ("army",         "army",    lambda s: s["has_weap"] and s["n_army"] < 8,                  "TRAIN_TANK",       None,        45),
+    ("attack",       "attack",  lambda s: s["has_weap"] and s["n_army"] >= 8 and not s["enemy_near"], "ATTACK",   "nearest",   30),
+]
+
+
+def decide(state, profile):
+    mult = PROFILES.get(profile, {})
+    best = None
+    for name, cat_, cond, macro, payload, w in RULES:
+        try:
+            ok = cond(state)
+        except Exception:
+            ok = False
+        if not ok:
+            continue
+        eff = w * mult.get(cat_, 1.0)
+        if best is None or eff > best[0]:
+            best = (eff, name, macro, payload)
+    if not best:
+        return "NOOP", None, "idle"
+    return best[2], best[3], best[1]
+
+
+# ---- executors (reuse build_base helpers; new logic for defense / AA / counter / sortie) ----
+def _build(act, obs, cat, anchor, full_id):
+    e = cat.by_id.get(full_id)
+    if not e:
+        return f"no {full_id}"
+    pr = produce_retry(act, BUILDINGTYPE, e["index"])
+    if not pr or pr[0] != 0:
+        return f"produce-fail {pr}"
+    for _ in range(40):
+        if building_ready(obs):
+            break
+        time.sleep(1)
+    return f"built {full_id} @ {find_and_place(act, e['index'], anchor)}"
+
+
+def _train(act, cat, full_id):
+    e = cat.by_id.get(full_id)
+    if not e:
+        return f"no {full_id}"
+    return f"train {full_id}: {produce_retry(act, UNITTYPE, e['index'])}"
+
+
+def execute(macro, payload, obs, act, cat, ctx, state):
+    p = ctx.get("prefix")
+    if macro == "NOOP":
+        return "idle"
+    if macro == "DEPLOY_MCV":
+        mcv = next((u for u in obs.read_own() if u["category"] == "Unit" and u["type_id"] in ctx["mcv_ids"]), None)
+        if not mcv:
+            return "no-mcv"
+        act.deploy(mcv["unique_id"])
+        for _ in range(30):
+            if own_buildings(obs):
+                return "deployed"
+            time.sleep(1)
+        return "deploy-timeout"
+    if macro in ("BUILD_POWER", "BUILD_REFINERY", "BUILD_BARRACKS", "BUILD_WARFACTORY", "BUILD_RADAR"):
+        label = {"BUILD_POWER": "power", "BUILD_REFINERY": "refinery", "BUILD_BARRACKS": "barracks",
+                 "BUILD_WARFACTORY": "war factory", "BUILD_RADAR": "radar"}[macro]
+        suf = name_to_suffix(label, cat, p)
+        return _build(act, obs, cat, ctx["anchor"], p + suf) if suf else "no-suffix"
+    if macro == "BUILD_DEFENSE":
+        for full in DEFENSE_BLDG.get(p, []):
+            if cat.by_id.get(full) and (full != "TESLA" or state["has_radar"]):   # tesla needs radar
+                return _build(act, obs, cat, ctx["anchor"], full)
+        return "no-defense-type"
+    if macro == "BUILD_AA":
+        return _build(act, obs, cat, ctx["anchor"], AA_BLDG.get(p, ""))
+    if macro == "TRAIN_TANK":
+        return _train(act, cat, MAIN_TANK.get(p, "HTNK"))
+    if macro == "TRAIN_ANTIARMOR":
+        return _train(act, cat, ANTI_ARMOR_UNIT.get(p, "DRON"))
+    if macro == "DEFEND":
+        ax, ay = ctx["anchor"]
+        for u in state["units"]:
+            act.attack_move(u["unique_id"], ax, ay)
+        return f"recalled {len(state['units'])} to base"
+    if macro == "ANTI_ARTY_SORTIE":
+        arty = state["enemy_arty"]
+        if not arty or not state["units"]:
+            return "no-target/army"
+        ax, ay = ctx["anchor"]
+        t = min(arty, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
+        for u in state["units"]:
+            act.attack_move(u["unique_id"], t["x"], t["y"])
+        return f"SORTIE {len(state['units'])} units -> V3 at ({t['x']},{t['y']})"
+    if macro == "ATTACK":
+        units, enemies = state["units"], obs.read_enemy()
+        if not units:
+            return "no-army"
+        ax, ay = ctx["anchor"]
+        if enemies:
+            t = min(enemies, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
+            tx, ty = t["x"], t["y"]
+        else:
+            tx, ty = (ax // 2 if ax > 80 else ax + 80), ay
+        for u in units:
+            act.attack_move(u["unique_id"], tx, ty)
+        return f"attack ({tx},{ty}) x{len(units)}"
+    return "unknown"
+
+
+def make_ctx(obs, cat):
+    bld = own_buildings(obs)
+    return {"anchor": (bld[0]["x"], bld[0]["y"]) if bld else None,
+            "prefix": (id_by_index(cat, "building", bld[0]["type_id"]) or "GA")[:2] if bld else None,
+            "mcv_ids": {e["index"] for e in cat.by_id.values()
+                        if e["category"] == "unit" and ("MCV" in e["id"] or "MCV" in e["ui_name"])}}
+
+
+def main(profile="balanced", max_ticks=45, launch=True):
+    if launch:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from commander_build import launch_game
+        print(f"launching match; script-prior policy (profile={profile}) will play...")
+        launch_game()
+        time.sleep(2)
+    obs, act, cat = connect(), ActWriter(), Catalog()
+    lut = _lookup(cat)
+    print("waiting for the match to initialize...")
+    for _ in range(120):
+        s = obs.read_state()
+        if s and s["owned_units"] > 0 and s["n_enemy"] < 200:
+            break
+        time.sleep(1)
+    print(f">>> WATCH: cheat-free STOCK-AI BRAIN drives (profile={profile}) — it builds, defends, "
+          f"and answers artillery with Terror Drones\n")
+    for tick in range(max_ticks):
+        s = obs.read_state()
+        if not s:
+            time.sleep(0.5)
+            continue
+        ctx = make_ctx(obs, cat)
+        st = snapshot(obs, cat, lut, ctx)
+        macro, payload, why = decide(st, profile)
+        res = execute(macro, payload, obs, act, cat, ctx, st)
+        threat = f" THREAT[arty={len(st['enemy_arty'])} air={len(st['enemy_air'])} near={len(st['enemy_near'])}]" if (st["enemy_arty"] or st["enemy_near"] or st["enemy_air"]) else ""
+        print(f"[{tick:2d}] B={s['owned_buildings']} U={s['owned_units']} E={s['n_enemy']} "
+              f"cr={s['credits']}{threat}  ->  {macro} ({why})  ->  {res}")
+        time.sleep(1)
+    obs.close()
+    act.close()
+
+
+if __name__ == "__main__":
+    prof = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in PROFILES else "balanced"
+    main(profile=prof)
