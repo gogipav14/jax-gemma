@@ -32,14 +32,17 @@ def main():
     print(f"=== Commander ({model}) deciding the build order (grounded) ===")
     d = think(SAMPLE_OBS, model=model, roster=ROSTER)
     order = d.get("priority_build_order", d.get("build_order", [])) or []
+    army = d.get("army_composition", {}) or {}
+    n_tanks = min(6, sum(v for v in army.values() if isinstance(v, int) and v > 0)) or 4
     print(f"  strategy:  {d.get('strategy')}")
     print(f"  reasoning: {(d.get('reasoning') or '')[:180]}")
-    print(f"  >>> BUILD ORDER (from the LLM): {order}\n")
+    print(f"  >>> BUILD ORDER (from the LLM): {order}")
+    print(f"  >>> ARMY (from the LLM): {army}  -> producing {n_tanks} tanks\n")
 
-    print("=== Launching the match, then executing the build order ===")
+    print("=== Launching the match, then building the base + army ===")
     launch_game()
     time.sleep(2)
-    build_base.main(order_override=order)
+    build_base.main(order_override=order, n_tanks=n_tanks)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,10 @@ SUFFIX_MAP = {"power": "POWR", "refinery": "REFN", "ore": "REFN", "war factory":
               "battle lab": "TECH", "science": "TECH", "tech": "TECH", "radar": "RADR"}
 
 
+UNITTYPE = 40  # AbstractType::UnitType
+MAIN_TANK = {"NA": "HTNK", "GA": "GTNK", "YA": "LTNK"}  # faction main battle tank ID
+
+
 def name_to_suffix(name, cat, prefix):
     n = name.lower()
     if "barrack" in n:
@@ -88,9 +92,9 @@ def find_and_place(act, idx, anchor):
     return None
 
 
-def main(order_override=None):
-    """order_override: optional list of (suffix, label), e.g. from an LLM build order
-    mapped to faction suffixes. Defaults to a standard Power->Refinery->Barracks->WarFactory."""
+def main(order_override=None, n_tanks=0):
+    """order_override: optional list of readable building names (e.g. from an LLM build order).
+    n_tanks: after the base, produce this many of the faction's main battle tank from the War Factory."""
     obs, act, cat = connect(), ActWriter(), Catalog()
 
     # 1) ensure a Construction Yard (deploy MCV if we have none)
@@ -164,6 +168,28 @@ def main(order_override=None):
         print(f"    -> buildings now = {len(own_buildings(obs))}\n")
 
     print("BASE BUILT. building type_ids:", sorted(b["type_id"] for b in own_buildings(obs)))
+
+    # 3) produce an army of the faction's main battle tank from the War Factory (serial / non-cheating)
+    if n_tanks > 0:
+        tank = MAIN_TANK.get(prefix, "HTNK")
+        e = cat.by_id.get(tank)
+        if not e:
+            print(f"  no main tank '{tank}' in catalog; skip army")
+        else:
+            print(f"\n>>> WATCH: producing {n_tanks}x {tank} (tanks) from the War Factory, one at a time")
+            u0 = sum(1 for u in obs.read_own() if u["category"] == "Unit")
+            for i in range(n_tanks):
+                r = produce_retry(act, UNITTYPE, e["index"])
+                print(f"  tank {i + 1}: {r}")
+                time.sleep(2)
+            for _ in range(45):
+                time.sleep(1)
+                u = sum(1 for ent in obs.read_own() if ent["category"] == "Unit")
+                if u >= u0 + n_tanks:
+                    break
+            u = sum(1 for ent in obs.read_own() if ent["category"] == "Unit")
+            print(f"  ARMY: own units {u0} -> {u} (+{u - u0} tanks built serially via OutList)")
+
     obs.close(); act.close()
 
 
