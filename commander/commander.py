@@ -55,14 +55,21 @@ def summarize_state(obs: dict) -> str:
     return "\n".join(lines)
 
 
-def think(obs: dict, model: str = "gemma4", timeout: int = 300) -> dict:
-    """Ask the model for a strategic directive. Returns a parsed dict."""
+def think(obs: dict, model: str = "gemma4", timeout: int = 300, roster=None) -> dict:
+    """Ask the model for a strategic directive. Returns a parsed dict.
+
+    roster: optional list of buildable structure names to GROUND the model (prevents
+    hallucinated units; the agent can only build/map these)."""
     briefing = summarize_state(obs)
+    ground = ""
+    if roster:
+        ground = ("\n\nYou may ONLY order these structures (use these EXACT names in "
+                  "priority_build_order): " + ", ".join(roster))
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Current game state:\n{briefing}\n\nGive your directive as JSON."},
+            {"role": "user", "content": f"Current game state:\n{briefing}{ground}\n\nGive your directive as JSON."},
         ],
         "stream": False,
         "format": "json",   # force structured output — key for a reliable agent

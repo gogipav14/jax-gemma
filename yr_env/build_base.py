@@ -14,6 +14,24 @@ from catalog import Catalog
 
 BUILDINGTYPE = 7  # AbstractType::BuildingType
 
+# readable building name -> ID suffix (prefix is the faction, resolved in-game). Most suffixes are
+# faction-consistent (POWR/REFN/WEAP/TECH); Barracks varies (HAND/PILE/BRCK) and is tried in order.
+SUFFIX_MAP = {"power": "POWR", "refinery": "REFN", "ore": "REFN", "war factory": "WEAP",
+              "battle lab": "TECH", "science": "TECH", "tech": "TECH", "radar": "RADR"}
+
+
+def name_to_suffix(name, cat, prefix):
+    n = name.lower()
+    if "barrack" in n:
+        for suf in ("HAND", "PILE", "BRCK"):
+            if cat.by_id.get(prefix + suf):
+                return suf
+        return None
+    for key, suf in SUFFIX_MAP.items():
+        if key in n and cat.by_id.get(prefix + suf):
+            return suf
+    return None
+
 
 def connect(timeout=120):
     t0 = time.time()
@@ -43,7 +61,7 @@ def building_ready(obs):
     return None
 
 
-def produce_retry(act, rtti, idx, timeout=40):
+def produce_retry(act, rtti, idx, timeout=18):
     """Produce, retrying on REJECTED_CANBUILD (prereq still constructing) until it sticks."""
     t0 = time.time()
     r = None
@@ -104,10 +122,18 @@ def main(order_override=None):
     print(f"Construction Yard at {anchor}; faction prefix '{prefix}'")
     print(">>> WATCH: Power Plant -> Refinery -> War Factory will appear one by one.\n")
 
-    # 2) build sequence (retry-produce handles prereqs still under construction)
-    order = (order_override or
-             [("POWR", "Power Plant"), ("REFN", "Refinery"), ("HAND", "Barracks"), ("WEAP", "War Factory")])
-    for suffix, label in order:
+    # 2) build sequence — order is a list of READABLE names (default or from the LLM commander)
+    order = order_override or ["Power Plant", "Refinery", "Barracks", "War Factory"]
+    # HARD PREREQUISITE the LLM may not know: a Power Plant must come first (everything needs power).
+    # The commander supplies strategic intent; the executor enforces buildability.
+    powers = [x for x in order if ("power" in x.lower() or "reactor" in x.lower())]
+    rest = [x for x in order if x not in powers]
+    order = ([powers[0]] if powers else ["Power Plant"]) + rest
+    print("  effective build order (executor enforces power-first):", order)
+    for label in order:
+        suffix = name_to_suffix(label, cat, prefix)
+        if not suffix:
+            print(f"  {label}: not a mappable {prefix} structure, skip"); continue
         bid = prefix + suffix
         e = cat.by_id.get(bid)
         if not e:
