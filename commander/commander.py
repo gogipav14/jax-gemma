@@ -14,10 +14,36 @@ Demo:  python commander/commander.py            # uses a sample early-game state
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.request
 
 OLLAMA_CHAT = "http://localhost:11434/api/chat"
+
+
+def _load_playbook() -> str:
+    """The reverse-engineered stock-AI decision table that the analysis agent DISCOVERED, loaded
+    AS-IS and fed to the commander — so the LLM reasons over the real playbook, not a hand-summary."""
+    path = os.path.join(os.path.dirname(__file__), "..", "docs", "stock-ai-blueprint.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+PLAYBOOK = _load_playbook()
+
+
+def _messages(user_content: str):
+    """System prompt + the discovered playbook (as-is) + the live battlefield query."""
+    msgs = [{"role": "system", "content": SYSTEM}]
+    if PLAYBOOK:
+        msgs.append({"role": "system", "content":
+                     "DISCOVERED ENEMY AI PLAYBOOK (reverse-engineered from the game files; "
+                     "use it as-is to anticipate and counter):\n\n" + PLAYBOOK})
+    msgs.append({"role": "user", "content": user_content})
+    return msgs
 
 # The commander plays FAIRLY — this mirrors the constraints our agent accepts vs.
 # the stock AI's cheats (see docs/ai-audit.md): serial production per queue, real
@@ -28,16 +54,11 @@ You play FAIRLY, exactly like a human — NOT like the cheating AI:
 - REAL economy: you must build refineries and protect harvesters to earn credits.
 - FOG OF WAR: you only know enemy units you can currently see; scout to learn more.
 
-YR PLAYBOOK — apply this expert knowledge (do not reason from generic RTS intuition):
-- Build order: ConYard -> Power (keep +50 surplus) -> 2 Refineries -> Barracks -> War Factory -> Radar. Protect harvesters.
-- Escalation ladder: no-tech = cheap harassment + base guards; once you have RADAR the enemy's V3 artillery waves go live; War Factory/Tech = armor balls then superunits.
-- KEY COUNTERS (always answer the enemy's actual composition):
-  * Enemy ARTILLERY (V3/Prism) kites and out-ranges your base defenses -> build TERROR DRONES (fast, lethal to vehicles) and SORTIE to hunt the artillery. Static defense alone LOSES to artillery.
-  * Enemy AIR -> Flak Cannons + Flak Tracks (anti-air), top priority.
-  * Enemy ARMOR mass -> Terror Drones / Tank Destroyers.
-  * Enemy SPIES -> guard dogs.
-- Defense is always-on and reactive; offense scales with your own tech. Keep an army at home until you can commit decisively; don't over-extend.
-- Read the battlefield report NUMBERS precisely. Do NOT assume threats that are not listed (if artillery=0, there is no artillery).
+Below this message you are given the ENEMY stock AI's ACTUAL decision table — reverse-engineered
+from the game files (the "discovered playbook"). Treat it as ground truth: anticipate which teams
+its triggers will build, counter its real unit compositions, and hold YOURSELF to equally strong,
+non-cheating play drawn from it. Read the battlefield report NUMBERS precisely; do not assume
+threats that are not listed (if artillery=0, there is no artillery).
 
 You think at a high level and emit a short strategic DIRECTIVE. A fast executor will
 carry it out. Be decisive and concrete. Output ONLY JSON matching this schema:
@@ -79,10 +100,7 @@ def think(obs: dict, model: str = "gemma4", timeout: int = 300, roster=None) -> 
                   "priority_build_order): " + ", ".join(roster))
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Current game state:\n{briefing}{ground}\n\nGive your directive as JSON."},
-        ],
+        "messages": _messages(f"Current game state:\n{briefing}{ground}\n\nGive your directive as JSON."),
         "stream": False,
         "format": "json",   # force structured output — key for a reliable agent
         # think=False: gemma4/Qwen3.x are reasoning models — without this they spend the
@@ -102,15 +120,12 @@ def think(obs: dict, model: str = "gemma4", timeout: int = 300, roster=None) -> 
     return json.loads(content)
 
 
-def command(briefing: str, model: str = "gemma4", timeout: int = 150) -> dict:
+def command(briefing: str, model: str = "gemma4", timeout: int = 300) -> dict:
     """Like think(), but takes a pre-built battlefield briefing string (so the live hierarchical
     loop can include threat detail). Returns the parsed strategic directive dict."""
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Current battlefield report:\n{briefing}\n\nGive your directive as JSON."},
-        ],
+        "messages": _messages(f"Current battlefield report:\n{briefing}\n\nGive your directive as JSON."),
         "stream": False, "format": "json", "think": False, "keep_alive": "10m",
         "options": {"temperature": 0.4, "num_predict": 600},
     }
