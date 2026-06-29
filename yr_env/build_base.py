@@ -92,9 +92,10 @@ def find_and_place(act, idx, anchor):
     return None
 
 
-def main(order_override=None, n_tanks=0):
+def main(order_override=None, n_tanks=0, attack=False):
     """order_override: optional list of readable building names (e.g. from an LLM build order).
-    n_tanks: after the base, produce this many of the faction's main battle tank from the War Factory."""
+    n_tanks: after the base, produce this many main battle tanks from the War Factory.
+    attack: after building the army, attack-move it toward a visible enemy (or scout out)."""
     obs, act, cat = connect(), ActWriter(), Catalog()
 
     # 1) ensure a Construction Yard (deploy MCV if we have none)
@@ -189,6 +190,23 @@ def main(order_override=None, n_tanks=0):
                     break
             u = sum(1 for ent in obs.read_own() if ent["category"] == "Unit")
             print(f"  ARMY: own units {u0} -> {u} (+{u - u0} tanks built serially via OutList)")
+
+    # 4) send the army to attack — toward a VISIBLE enemy (fog-honored), else push out to scout
+    if attack:
+        time.sleep(2)
+        tanks = [u for u in obs.read_own() if u["category"] == "Unit" and (u["x"] or u["y"])]
+        enemies = [e for e in obs.read_enemy() if (e["x"] or e["y"])]
+        ax, ay = anchor
+        if enemies:
+            tgt = min(enemies, key=lambda e: abs(e["x"] - ax) + abs(e["y"] - ay))
+            tx, ty = tgt["x"], tgt["y"]
+            print(f"\n>>> WATCH: attacking with {len(tanks)} units toward a VISIBLE enemy at ({tx},{ty})")
+        else:
+            tx, ty = (ax // 2 if ax > 80 else ax + 80), ay  # no enemy seen -> push toward map interior
+            print(f"\n>>> WATCH: no enemy in sight; pushing {len(tanks)} units toward ({tx},{ty}) to scout/attack")
+        for u in tanks:
+            act.attack_move(u["unique_id"], tx, ty)
+        print(f"  ordered {len(tanks)} units to attack-move.")
 
     obs.close(); act.close()
 

@@ -85,6 +85,18 @@ class ObsReader:
                         "category_rtti": cat, "x": x, "y": y, "hp": hp})
         return out
 
+    def read_enemy(self, limit=None):
+        """Return currently-VISIBLE enemy entities (fog-honored by the DLL)."""
+        n = struct.unpack("<H", self._bytes(OFF_COUNTS + 2, 2))[0]  # n_enemy
+        n = min(n, N_ENEMY, limit) if limit else min(n, N_ENEMY)
+        out = []
+        for i in range(n):
+            uid, tid, x, y, cat, hp, st, gid = struct.unpack(
+                "<" + ENTITY_FMT, self._bytes(OFF_ENEMY + i * ENTITY_SIZE, ENTITY_SIZE))
+            out.append({"unique_id": uid, "type_id": tid, "category": _RTTI.get(cat, cat),
+                        "x": x, "y": y, "hp": hp})
+        return out
+
     def read_factories(self):
         """Return the list of own factories: dicts with category, current_type_id, progress, queue."""
         n = struct.unpack("<H", self._bytes(OFF_COUNTS + 4, 2))[0]  # n_factory

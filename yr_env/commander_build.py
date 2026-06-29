@@ -34,15 +34,17 @@ def main():
     order = d.get("priority_build_order", d.get("build_order", [])) or []
     army = d.get("army_composition", {}) or {}
     n_tanks = min(6, sum(v for v in army.values() if isinstance(v, int) and v > 0)) or 4
-    print(f"  strategy:  {d.get('strategy')}")
+    stance = (d.get("stance") or "").lower()
+    attack = stance != "defensive"   # commander's stance decides whether to push out
+    print(f"  strategy:  {d.get('strategy')}   stance: {stance or '?'}")
     print(f"  reasoning: {(d.get('reasoning') or '')[:180]}")
     print(f"  >>> BUILD ORDER (from the LLM): {order}")
-    print(f"  >>> ARMY (from the LLM): {army}  -> producing {n_tanks} tanks\n")
+    print(f"  >>> ARMY (from the LLM): {army}  -> {n_tanks} tanks; attack={attack}\n")
 
-    print("=== Launching the match, then building the base + army ===")
+    print("=== Launching the match, then building base + army + attacking ===")
     launch_game()
     time.sleep(2)
-    build_base.main(order_override=order, n_tanks=n_tanks)
+    build_base.main(order_override=order, n_tanks=n_tanks, attack=attack)
 
 
 if __name__ == "__main__":
