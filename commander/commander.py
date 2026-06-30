@@ -136,6 +136,50 @@ def command(briefing: str, model: str = "gemma4", timeout: int = 300) -> dict:
     return json.loads(resp["message"]["content"])
 
 
+# --- Lean ADAPTIVE commander: fast enough to run in the loop on a small model (qwen3.5:0.8b). ---
+# It is NOT a script: it READS the exact numbers and ADAPTS, returning {read, focus, counter, stance}.
+# Few-shot examples (counters drawn from the discovered playbook) keep a tiny model grounded + quick.
+ADAPT_SYSTEM = """You are the adaptive strategist for a Command & Conquer: Yuri's Revenge player who
+plays FAIRLY (serial production, real economy, fog of war — NO cheats). You do NOT follow a fixed
+script: you READ THE EXACT battlefield numbers and ADAPT with insight.
+
+HARD RULE: react ONLY to threats actually present in the numbers. If artillery=0 there is NO
+artillery (never mention V3s). If air=0 there is NO air. Do not invent threats.
+
+Counters (match the counter to the REAL threat):
+- enemy artillery (V3/Prism) > 0 -> Terror Drone (fast, kills the squishy artillery) + sortie to hunt it
+- enemy air > 0                  -> Flak Cannon / Flak Track (anti-air)
+- enemy armor mass               -> Terror Drone / Tank Destroyer
+- no threat                      -> develop economy and tech, expand
+
+Output ONLY compact JSON:
+{"read":"<one sentence grounded in the actual numbers>","focus":"economy|army|defense|tech","counter":"<one real unit or building, or none>","stance":"attack|defend|expand"}"""
+
+ADAPT_FEWSHOT = [
+    ("Soviet. Base 3 buildings (war factory=False radar=False). Army 4. Enemy visible 2 (artillery=0 air=0 at-base=0).",
+     '{"read":"No threats present; safe to build economy and tech toward a War Factory.","focus":"economy","counter":"none","stance":"expand"}'),
+    ("Soviet. Base 8 buildings (war factory=True radar=True). Army 9. Enemy visible 11 (artillery=6 air=0 at-base=5).",
+     '{"read":"Six enemy V3 artillery are kiting my base; build Terror Drones and sortie to kill them.","focus":"army","counter":"Terror Drone","stance":"attack"}'),
+    ("Soviet. Base 9 buildings (war factory=True radar=True). Army 10. Enemy visible 6 (artillery=0 air=5 at-base=2).",
+     '{"read":"Five enemy aircraft inbound and no artillery; prioritize anti-air immediately.","focus":"defense","counter":"Flak Cannon","stance":"defend"}'),
+]
+
+
+def adapt(briefing: str, model: str = "qwen3.5:0.8b", timeout: int = 90) -> dict:
+    """Fast, grounded ADAPTIVE read (not a script). Returns {read, focus, counter, stance}."""
+    msgs = [{"role": "system", "content": ADAPT_SYSTEM}]
+    for u, a in ADAPT_FEWSHOT:
+        msgs += [{"role": "user", "content": "Battlefield now:\n" + u}, {"role": "assistant", "content": a}]
+    msgs.append({"role": "user", "content": "Battlefield now:\n" + briefing})
+    payload = {"model": model, "messages": msgs, "stream": False, "format": "json", "think": False,
+               "keep_alive": "5m", "options": {"temperature": 0.4, "num_predict": 140}}
+    req = urllib.request.Request(OLLAMA_CHAT, data=json.dumps(payload).encode(),
+                                headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        resp = json.loads(r.read())
+    return json.loads(resp["message"]["content"])
+
+
 # A representative early-game OBS (the 1v7 Andalusia state our Phase-1 bridge actually read).
 SAMPLE_OBS = {
     "frame_seq": 300, "side_index": 4, "map": "[8] Andalusia (1 human vs 7 AI)",
