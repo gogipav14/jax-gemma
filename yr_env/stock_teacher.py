@@ -17,6 +17,8 @@ ROLE2BUILD = {gm.POWER: 2, gm.ECONOMY: 3, gm.PROD_INF: 4, gm.PROD_VEH: 5, gm.TEC
 def stock_teacher(pos: gm.Position) -> int:
     if pos.anchor is None:
         return 1                                          # deploy MCV -> Construction Yard
+    if pos.power_surplus < 0:
+        return 2                                          # BLACKOUT: restore power -> defenses fire again
     nb = pos.next_build()
     if nb in ROLE2BUILD:
         return ROLE2BUILD[nb]                             # escalation ladder: power->2 refn->barracks->war factory->radar

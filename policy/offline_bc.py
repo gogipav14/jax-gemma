@@ -69,7 +69,8 @@ def aux_targets(pos):
         cnt = 0
     thr = 1.0 if any(t.at_base for t in pos.threats) else 0.0     # INFO/DEFENSE: base under attack?
     ev = float(gm.evaluate(pos))                                  # EVAL: position score V
-    return bld, cnt, np.float32(thr), np.float32(ev)
+    pwr = 1.0 if pos.power_surplus >= 0 else 0.0                  # POWER: adequate? (output >= drain -> defenses fire)
+    return bld, cnt, np.float32(thr), np.float32(ev), np.float32(pwr)
 
 
 class Sim:
@@ -97,11 +98,16 @@ class Sim:
         self.threats = []                      # list of (role, count, at_base, counter)
         self.attacking = 0                     # ticks our army has been pushing the enemy
 
+    def _power(self):
+        """Power surplus: each plant feeds +150, every other structure (incl. ConYard) drains 30.
+        Negative => BLACKOUT: powered defenses go offline. One plant supports ~5 buildings."""
+        drain = (sum(self.b.values()) - self.b[gm.POWER] + (1 if self.deployed else 0)) * 30
+        return self.b[gm.POWER] * 150 - drain
+
     def position(self):
         p = gm.Position(prefix="NA", anchor=ANCHOR if self.deployed else None)   # no ConYard until deploy
         p.credits = self.credits                                                 # so the scalar carries cash
-        n_other = sum(self.b.values()) - self.b[gm.POWER]
-        p.power_surplus = self.b[gm.POWER] * 150 - n_other * 30                   # power plants feed, the rest drain
+        p.power_surplus = self._power()                                          # plants feed, everything else drains
         p.own_buildings = {k: v for k, v in self.b.items() if v > 0}
         if self.deployed:
             p.own_buildings[gm.CONSTRUCTION] = 1
@@ -188,35 +194,44 @@ class Sim:
                 self.enemy_hp -= 1
         else:
             self.attacking = max(0, self.attacking - 1)
+        # --- power: a raid at the base can knock out a plant -> blackout -> defenses go dark ---
+        at_base_threat = any(ab for (_, _, ab, _) in self.threats)
+        if at_base_threat and self.b[gm.POWER] > 0 and self.rng.random() < 0.15:
+            self.b[gm.POWER] -= 1                            # plant destroyed
+        if self._power() < 0 and at_base_threat and self.rng.random() < 0.3:
+            for r in (gm.DEF_GROUND, gm.DEF_AA):            # blackout under attack -> lose a (dark) defense
+                if self.b[r] > 0:
+                    self.b[r] -= 1
+                    break
         return self.enemy_hp <= 0 or self.tick >= 60
 
 
 def collect(n_games=120, seed=0):
     rng = np.random.default_rng(seed)
-    G, S, A, BLD, CNT, THR, EV, E, EM = [], [], [], [], [], [], [], [], []
+    G, S, A, BLD, CNT, THR, EV, PWR, E, EM = [], [], [], [], [], [], [], [], [], []
     for gi in range(n_games):
         sim = Sim(rng, rich=(gi % 3 == 0))     # ~1/3 of games start flush with cash -> different priority
         for _ in range(60):
             pos = sim.position()
             a = stock_teacher(pos)
-            bld, cnt, thr, ev = aux_targets(pos)
+            bld, cnt, thr, ev, pwr = aux_targets(pos)
             et, em = sim.entities()
             G.append(sim.grid()); S.append(encode(pos)); A.append(a)
-            BLD.append(bld); CNT.append(cnt); THR.append(thr); EV.append(ev)
+            BLD.append(bld); CNT.append(cnt); THR.append(thr); EV.append(ev); PWR.append(pwr)
             E.append(et); EM.append(em)
             if sim.step(a):
                 break
     return (np.asarray(G, np.float32), np.asarray(S, np.float32), np.asarray(A, np.int32),
             np.asarray(BLD, np.float32), np.asarray(CNT, np.int32),
-            np.asarray(THR, np.float32), np.asarray(EV, np.float32),
+            np.asarray(THR, np.float32), np.asarray(EV, np.float32), np.asarray(PWR, np.float32),
             np.asarray(E, np.float32), np.asarray(EM, np.float32))
 
 
-def bc(G, S, A, BLD, CNT, THR, EV, E, EM, steps=600, lr=2e-3, batch=512):
+def bc(G, S, A, BLD, CNT, THR, EV, PWR, E, EM, steps=600, lr=2e-3, batch=512):
     p = net.init_params(random.PRNGKey(0))
     opt = optax.adam(lr); st = opt.init(p)
 
-    def loss(pp, g, s, e, em, a, bld, cnt, thr, ev):
+    def loss(pp, g, s, e, em, a, bld, cnt, thr, ev, pwr):
         h = net.heads(pp, g, s, e, em)
         n = a.shape[0]
         pi = -jnp.mean(jax.nn.log_softmax(h["pi"])[jnp.arange(n), a])              # the move
@@ -224,8 +239,9 @@ def bc(G, S, A, BLD, CNT, THR, EV, E, EM, steps=600, lr=2e-3, batch=512):
         cl = -jnp.mean(jax.nn.log_softmax(h["cnt"])[jnp.arange(n), cnt])           # counter matrix
         tl = jnp.mean(optax.sigmoid_binary_cross_entropy(h["thr"], thr))           # threat at base
         el = jnp.mean((h["ev"] - ev) ** 2)                                         # position eval
-        total = pi + 0.5 * bl + 0.5 * cl + 0.3 * tl + 0.1 * el
-        return total, (pi, bl, cl, tl, el)
+        wl = jnp.mean(optax.sigmoid_binary_cross_entropy(h["pwr"], pwr))           # power adequate
+        total = pi + 0.5 * bl + 0.5 * cl + 0.3 * tl + 0.1 * el + 0.3 * wl
+        return total, (pi, bl, cl, tl, el, wl)
     gfn = jax.jit(jax.value_and_grad(loss, has_aux=True))
     n = len(A)
     rng = np.random.default_rng(1)
@@ -234,16 +250,17 @@ def bc(G, S, A, BLD, CNT, THR, EV, E, EM, steps=600, lr=2e-3, batch=512):
         bg, bs, be, bm = jnp.asarray(G[idx]), jnp.asarray(S[idx]), jnp.asarray(E[idx]), jnp.asarray(EM[idx])
         (l, parts), gr = gfn(p, bg, bs, be, bm, jnp.asarray(A[idx]),
                              jnp.asarray(BLD[idx]), jnp.asarray(CNT[idx]),
-                             jnp.asarray(THR[idx]), jnp.asarray(EV[idx]))
+                             jnp.asarray(THR[idx]), jnp.asarray(EV[idx]), jnp.asarray(PWR[idx]))
         u, st = opt.update(gr, st, p); p = optax.apply_updates(p, u)
         if i % 100 == 0 or i == steps - 1:
             h = net.heads(p, bg, bs, be, bm)
             pacc = float((jnp.argmax(h["pi"], -1) == jnp.asarray(A[idx])).mean())
             cacc = float((jnp.argmax(h["cnt"], -1) == jnp.asarray(CNT[idx])).mean())
             bacc = float(((h["bld"] > 0) == (jnp.asarray(BLD[idx]) > 0.5)).mean())
-            pi, bl, cl, tl, el = (float(x) for x in parts)
+            wacc = float(((h["pwr"] > 0) == (jnp.asarray(PWR[idx]) > 0.5)).mean())
+            pi, bl, cl, tl, el, wl = (float(x) for x in parts)
             print(f"  step {i:4d} | pi {pi:.3f}(acc {pacc:.2f})  bld {bl:.3f}(acc {bacc:.2f})  "
-                  f"cnt {cl:.3f}(acc {cacc:.2f})  thr {tl:.3f}  ev {el:.2f}")
+                  f"cnt {cl:.3f}(acc {cacc:.2f})  thr {tl:.3f}  ev {el:.2f}  pwr {wl:.3f}(acc {wacc:.2f})")
     return p
 
 
@@ -271,6 +288,19 @@ def _probe(p):
         ans = COUNTER_NAME[int(jnp.argmax(h["cnt"][0]))]
         atk = "yes" if float(h["thr"][0]) > 0 else "no"
         print(f"  counter | enemy {role:11s} -> brain answers {ans:11s} (truth {truth:11s}) | under attack? {atk}")
+    # power: a base with many structures but one plant is in DEFICIT -> head flags it, policy rebuilds power
+    for label, blds in [("healthy (2 plants)", {gm.CONSTRUCTION: 1, gm.POWER: 2, gm.ECONOMY: 2, gm.PROD_INF: 1}),
+                        ("blackout (1 plant) ", {gm.CONSTRUCTION: 1, gm.POWER: 1, gm.ECONOMY: 2, gm.PROD_INF: 1,
+                                                 gm.PROD_VEH: 1, gm.TECH_RADAR: 1, gm.DEF_GROUND: 2})]:
+        drain = (sum(blds.values()) - blds.get(gm.POWER, 0)) * 30
+        surplus = blds.get(gm.POWER, 0) * 150 - drain
+        pos = gm.Position(prefix="NA", anchor=ANCHOR, own_buildings=blds, power_surplus=surplus)
+        et, em = _pos_entities(pos)
+        h = net.heads(p, jnp.asarray(_sim_grid_for(pos)[None]), jnp.asarray(encode(pos)[None]),
+                      jnp.asarray(et[None]), jnp.asarray(em[None]))
+        adequate = "adequate" if float(h["pwr"][0]) > 0 else "INADEQUATE"
+        move = ACTION_NAME[int(jnp.argmax(h["pi"][0]))]
+        print(f"  power   | {label} surplus {surplus:+5d} -> head: {adequate:10s} | move: {move}")
 
 
 def _pos_entities(pos):
@@ -298,14 +328,15 @@ def _sim_grid_for(pos):
 if __name__ == "__main__":
     from mock_env import ACTION_NAME
     print("=== collecting offline demos from the stock-AI teacher (+ game-structure labels) ===")
-    G, S, A, BLD, CNT, THR, EV, E, EM = collect()
+    G, S, A, BLD, CNT, THR, EV, PWR, E, EM = collect()
     dist = {ACTION_NAME[i]: int((A == i).sum()) for i in sorted(set(A.tolist()))}
     cdist = {COUNTER_NAME[i]: int((CNT == i).sum()) for i in sorted(set(CNT.tolist()))}
     print(f"  {len(A)} demos | actions: {dist}")
     print(f"            | counters: {cdist}  | base-under-attack: {int(THR.sum())}/{len(THR)}")
-    print(f"            | roster: avg {float(EM.sum(1).mean()):.1f} tokens/state (max {int(EM.sum(1).max())})")
-    print("=== multi-task BC the fused brain (eyes + ROSTER + state: move + prereqs + counters + threat + eval) ===")
-    p = bc(G, S, A, BLD, CNT, THR, EV, E, EM)
+    print(f"            | roster: avg {float(EM.sum(1).mean()):.1f} tokens/state (max {int(EM.sum(1).max())})"
+          f"  | blackout states: {int((PWR < 0.5).sum())}/{len(PWR)}")
+    print("=== multi-task BC the fused brain (eyes + ROSTER + state: move + prereqs + counters + threat + eval + power) ===")
+    p = bc(G, S, A, BLD, CNT, THR, EV, PWR, E, EM)
     with open(OUT, "wb") as f:
         pickle.dump(jax.tree.map(lambda x: np.asarray(x), p), f)
     print(f"saved warm-start -> {OUT}")

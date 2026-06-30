@@ -45,7 +45,7 @@ def _norm(k, d):
 
 def init_params(key, grid_ch=7, grid_dim=64, scalar_dim=21, n_act=15, hidden=128,
                 ent_feat=ENT_FEAT, ent_dim=ENT_DIM):
-    k = random.split(key, 20)
+    k = random.split(key, 24)
     flat = 32 * (grid_dim // 8) * (grid_dim // 8)        # after 3 stride-2 convs
     return {"c1": _conv(k[0], 16, grid_ch, 3, 3),
             "c2": _conv(k[1], 32, 16, 3, 3),
@@ -66,8 +66,9 @@ def init_params(key, grid_ch=7, grid_dim=64, scalar_dim=21, n_act=15, hidden=128
             "v":   _lin(k[7], hidden, 1),                # RL value (goal-return; left for RL)
             "bld": _lin(k[8], hidden, N_BUILD_ROLE),     # aux: buildable / prereqs
             "cnt": _lin(k[9], hidden, N_COUNTER),        # aux: counter to the threat
-            "thr": _lin(k[1], hidden, 1),                # aux: threat at base   (key reuse ok: fresh draw)
-            "ev":  _lin(k[2], hidden, 1)}                # aux: position eval V
+            "thr": _lin(k[20], hidden, 1),               # aux: threat at base
+            "ev":  _lin(k[21], hidden, 1),               # aux: position eval V
+            "pwr": _lin(k[22], hidden, 1)}               # aux: power adequate (output >= drain -> defenses fire)
 
 
 def _conv2d(x, layer, stride):
@@ -137,7 +138,8 @@ def heads(p, grid, scalar, entities=None, ent_mask=None):
     f = _trunk(p, grid, scalar, entities, ent_mask)
     return {"pi": _ap(p["pi"], f), "v": _ap(p["v"], f)[..., 0],
             "bld": _ap(p["bld"], f), "cnt": _ap(p["cnt"], f),
-            "thr": _ap(p["thr"], f)[..., 0], "ev": _ap(p["ev"], f)[..., 0]}
+            "thr": _ap(p["thr"], f)[..., 0], "ev": _ap(p["ev"], f)[..., 0],
+            "pwr": _ap(p["pwr"], f)[..., 0]}
 
 
 def decide(p, grid, scalar, key=None, greedy=True, entities=None, ent_mask=None):
