@@ -119,7 +119,13 @@ class YRLearnEnv:
         pos = gm.build_position(self.obs_r, self.cat, self.lut, self.memory, self.tick, self.econ)
         self.pos = pos
         self.last_V = pos.V
+        self.prev_own_b = sum(pos.own_buildings.values())          # for the GOAL reward (survival)
+        self.prev_enemy_c = sum(pos.enemy_seen.values())          # visible enemy combat (offense proxy)
+        self.prev_enemy_b = self._enemy_buildings()               # enemy structures seen (destroy = the goal)
         return encode(pos)
+
+    def _enemy_buildings(self):
+        return sum(1 for e in self.obs_r.read_enemy() if e["category"] == "Building" and (e["x"] or e["y"]))
 
     def step(self, action_idx):
         ctx = sp.make_ctx(self.obs_r, self.cat)
@@ -129,8 +135,17 @@ class YRLearnEnv:
         self.tick += 1
         s = self.obs_r.read_state() or {}
         pos2 = gm.build_position(self.obs_r, self.cat, self.lut, self.memory, self.tick, self.econ)
-        term_r, done = terminal_reward(pos2, s)
-        reward = (pos2.V - self.last_V) + term_r          # dense ΔV + terminal win/lose
+        # --- GOAL-centered reward: hurt the opponent + survive. NOTHING for building the means. ---
+        own_b = sum(pos2.own_buildings.values())
+        enemy_c = sum(pos2.enemy_seen.values())
+        enemy_b = self._enemy_buildings()
+        reward = (3.0 * max(0, self.prev_enemy_b - enemy_b)      # razed an enemy STRUCTURE — the goal
+                  + 0.3 * max(0, self.prev_enemy_c - enemy_c)    # killed visible enemy units (offense)
+                  - 1.0 * max(0, self.prev_own_b - own_b))       # lost our own buildings (survival)
+        done = (pos2.anchor is None and s.get("owned_buildings", 0) == 0)
+        if done:
+            reward -= 10.0                                       # base destroyed = we lost
+        self.prev_own_b, self.prev_enemy_c, self.prev_enemy_b = own_b, enemy_c, enemy_b
         self.pos = pos2
         self.last_V = pos2.V
         return encode(pos2), float(reward), done, {"macro": MACROS[action_idx], "result": result, "V": pos2.V}
