@@ -46,6 +46,30 @@ def encode(pos: gm.Position) -> np.ndarray:
     return np.asarray(own + enemy + scal, np.float32)
 
 
+# --- the ROSTER: each visible techno as a token (per-unit WHAT) for the entity transformer ---
+# token = one-hot(ENT_ROLES) + [is_enemy, x_norm, y_norm, at_base]; matches net.ENT_FEAT / net.MAX_ENT
+ENT_ROLES = [gm.POWER, gm.ECONOMY, gm.PROD_INF, gm.PROD_VEH, gm.TECH_RADAR, gm.DEF_GROUND, gm.DEF_AA,
+             gm.CONSTRUCTION, gm.MAIN_BATTLE, gm.ANTI_ARMOR, gm.ANTI_AIR, gm.ARTILLERY, gm.SUPERUNIT]
+ENT_ROLE_IX = {r: i for i, r in enumerate(ENT_ROLES)}
+ENT_FEAT = len(ENT_ROLES) + 4        # = 17 (must equal net.ENT_FEAT)
+MAX_ENT = 48                         # token cap (= net.MAX_ENT)
+
+
+def entity_tokens(items, max_ent=MAX_ENT):
+    """items: list of (role, is_enemy, x_norm, y_norm, at_base) -> (max_ent, ENT_FEAT) + (max_ent,) mask."""
+    toks = np.zeros((max_ent, ENT_FEAT), np.float32)
+    mask = np.zeros((max_ent,), np.float32)
+    for i, (role, is_enemy, xn, yn, atb) in enumerate(items[:max_ent]):
+        ri = ENT_ROLE_IX.get(role)
+        if ri is None:
+            continue
+        toks[i, ri] = 1.0
+        toks[i, 13] = float(is_enemy)
+        toks[i, 14] = float(xn); toks[i, 15] = float(yn); toks[i, 16] = float(atb)
+        mask[i] = 1.0
+    return toks, mask
+
+
 def _execute_macro(idx, pos, obs, act, cat, ctx):
     """Carry out one macro via the non-cheating path. Illegal moves just fail (the env's 'rules')."""
     kind, role = MACROS[idx]
@@ -154,6 +178,27 @@ class YRLearnEnv:
         """The spatial vision for the fused brain: (7, 64, 64) float in [0,1] (uint8 grid / 255)."""
         g, _ = self.obs_r.read_grid()
         return g.astype(np.float32) / 255.0
+
+    def entities(self):
+        """The roster for the entity transformer: every visible techno as a token + mask.
+
+        Per-unit role/side/position/at-base, read straight from the (fog-honored) OBS lists -- the
+        per-unit identity the role-count scalar throws away (targeting / reading enemy composition)."""
+        from game_model import role_of
+        anchor = self.pos.anchor if getattr(self, "pos", None) else None
+        items = []
+        for e in self.obs_r.read_own():
+            cat = e["category"].lower()
+            role = role_of(self.lut.get((cat, e["type_id"]), ""), cat)
+            items.append((role, False, e["x"] / 256.0, e["y"] / 256.0, 1.0))
+        for e in self.obs_r.read_enemy():
+            if not (e["x"] or e["y"]):
+                continue
+            cat = e["category"].lower()
+            role = role_of(self.lut.get((cat, e["type_id"]), ""), cat)
+            atb = bool(anchor and abs(e["x"] - anchor[0]) + abs(e["y"] - anchor[1]) < 30)
+            items.append((role, True, e["x"] / 256.0, e["y"] / 256.0, float(atb)))
+        return entity_tokens(items)
 
     def close(self):
         if self.obs_r:

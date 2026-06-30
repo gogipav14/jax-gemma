@@ -66,6 +66,9 @@ PREREQ = {POWER: [CONSTRUCTION], ECONOMY: [POWER], PROD_INF: [POWER],
           DEF_GROUND: [POWER], DEF_AA: [POWER]}
 # canonical opening (topologically valid): the order the baseline establishes
 BASE_ORDER = [POWER, ECONOMY, ECONOMY, PROD_INF, PROD_VEH, TECH_RADAR]
+# above this much cash, money is NOT the constraint -- the one-at-a-time queue + build TIME is.
+# A 2nd refinery is then wasted queue: bank fewer economy buildings, reach production/army sooner.
+RICH_CREDITS = 50000
 
 # --- logic: counter graph (enemy role -> the role that best answers it) ---
 COUNTER = {ARTILLERY: ANTI_ARMOR, MAIN_BATTLE: ANTI_ARMOR, SUPERUNIT: ANTI_ARMOR,
@@ -110,10 +113,15 @@ class Position:
         return self.own_buildings.get(role, 0) > 0
 
     def next_build(self):
-        """Prereq-correct next structure role to establish the base (None if base complete)."""
+        """Prereq-correct next structure role to establish the base (None if base complete).
+
+        Economy is credit-conditional: flush with cash (>= RICH_CREDITS) one refinery is enough and
+        a second only clogs the queue, so we want fewer -- reaching production/army sooner. Scarce,
+        we want two refineries to ramp income. The brain reads credits in its obs and learns this."""
+        econ_want = 1 if self.credits >= RICH_CREDITS else 2
         for r in BASE_ORDER:
             need = self.own_buildings.get(r, 0)
-            want = 2 if r == ECONOMY else 1
+            want = econ_want if r == ECONOMY else 1
             if need < want and all(self.own_buildings.get(p, 0) > 0 for p in PREREQ.get(r, [])):
                 return r
         return None
