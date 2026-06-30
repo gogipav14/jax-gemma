@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ROOT, "yr_env"))
 sys.path.insert(0, os.path.join(ROOT, "policy"))
 import net                                               # noqa: E402  (the fused brain)
 from rl_env import YRLearnEnv, MACROS                    # noqa: E402
-from train_live import teacher_action                    # noqa: E402
+from stock_teacher import stock_teacher                  # noqa: E402  (the BC teacher = the distilled stock AI)
 
 
 def discounted(R, gamma=0.99):
@@ -76,9 +76,9 @@ def collect_bc(env, n_games, max_steps=55):
     for g in range(n_games):
         obs = env.reset()
         grid = env.grid()
-        print(f"\n-- BC teacher game {g + 1} (live) --")
+        print(f"\n-- BC stock-AI-teacher game {g + 1} (live) --")
         for t in range(max_steps):
-            a = teacher_action(env.pos)
+            a = stock_teacher(env.pos)
             G.append(grid); S.append(obs); A.append(a)
             obs, r, done, info = env.step(a)
             grid = env.grid()
