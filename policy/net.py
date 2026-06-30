@@ -142,6 +142,49 @@ def heads(p, grid, scalar, entities=None, ent_mask=None):
             "pwr": _ap(p["pwr"], f)[..., 0]}
 
 
+def capture_inputs(p, grid, scalar, entities, ent_mask):
+    """Run the forward and return {dense_layer_key: (rows, in)} -- the input to each 2D layer, for
+    activation-aware (influence) quantization. Mirrors _trunk/_entity_feat exactly. NumPy out."""
+    import numpy as _np
+    cap = {}
+    h = jnp.tanh(_conv2d(grid, p["c1"], 2))
+    h = jnp.tanh(_conv2d(h, p["c2"], 2))
+    h = jnp.tanh(_conv2d(h, p["c3"], 2))
+    hf = h.reshape(h.shape[0], -1)
+    cap["sp"] = hf
+    sp = jnp.tanh(_ap(p["sp"], hf))
+    cap["sc"] = scalar
+    sc = jnp.tanh(_ap(p["sc"], scalar))
+    # entity transformer
+    cap["et"] = entities.reshape(-1, entities.shape[-1])
+    x = jnp.tanh(_ap(p["et"], entities))
+    hn = _ln(x, p["ln1"])
+    cap["wq"] = cap["wk"] = cap["wv"] = hn.reshape(-1, hn.shape[-1])
+    q, k, v = _ap(p["wq"], hn), _ap(p["wk"], hn), _ap(p["wv"], hn)
+    d = q.shape[-1]
+    scores = jnp.einsum("bnd,bmd->bnm", q, k) / jnp.sqrt(d)
+    scores = scores + jnp.where(ent_mask[:, None, :] > 0, 0.0, -1e9)
+    a = jax.nn.softmax(scores, -1)
+    o = jnp.einsum("bnm,bmd->bnd", a, v)
+    cap["wo"] = o.reshape(-1, o.shape[-1])
+    x = x + _ap(p["wo"], o)
+    h2 = _ln(x, p["ln2"])
+    cap["ff1"] = h2.reshape(-1, h2.shape[-1])
+    r = jax.nn.relu(_ap(p["ff1"], h2))
+    cap["ff2"] = r.reshape(-1, r.shape[-1])
+    x = x + _ap(p["ff2"], r)
+    m = ent_mask[:, :, None]
+    pooled = (x * m).sum(1) / jnp.clip(m.sum(1), 1.0)
+    cap["en"] = pooled
+    en = jnp.tanh(_ap(p["en"], pooled))
+    f_in = jnp.concatenate([sp, sc, en], -1)
+    cap["f"] = f_in
+    f = jnp.tanh(_ap(p["f"], f_in))
+    for hk in ("pi", "v", "bld", "cnt", "thr", "ev", "pwr"):
+        cap[hk] = f
+    return {kk: _np.asarray(vv) for kk, vv in cap.items()}
+
+
 def decide(p, grid, scalar, key=None, greedy=True, entities=None, ent_mask=None):
     """One decision from a single (grid, scalar[, roster]) observation -> (macro_index, value)."""
     g = grid[None] if grid.ndim == 3 else grid

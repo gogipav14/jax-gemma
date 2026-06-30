@@ -49,11 +49,15 @@ def _next_pow2(n):
     return 1 << (n - 1).bit_length()
 
 
-def quantize_dequantize(w, bits, rotate=True):
+def quantize_dequantize(w, bits, rotate=True, act=None, alpha=0.5):
     """Round-trip a weight matrix (in, out) through N-bit per-output-channel quantization.
 
-    rotate=True applies the WHT incoherence rotation first (the paper's method); rotate=False is the
-    naive baseline. Returns an fp32 matrix with exactly the quantized weight's information content."""
+    rotate=True applies the WHT incoherence rotation (QuIP/QuaRot core). act (M, in) is calibration
+    activations for this layer: when given, rescale the (rotated) input rows by per-coordinate
+    activation energy^alpha before quantizing -- the influence-adaptive step of arXiv:2605.25203, so
+    the high-energy channels (which dominate y) are quantized with less relative error. The scaling
+    is folded back into the returned fp32 weight, so the normal forward reproduces the activation-
+    aware quantized inference exactly. rotate=False, act=None is the naive baseline."""
     w = np.asarray(w, np.float32)
     in_, out = w.shape
     qmax = 2 ** (bits - 1) - 1
@@ -63,21 +67,39 @@ def quantize_dequantize(w, bits, rotate=True):
         wp = np.zeros((n, out), np.float32); wp[:in_] = w
         wr = H @ wp                                       # rotate into the incoherent basis
     else:
-        wr = w
-    scale = np.maximum(np.abs(wr).max(0), 1e-8) / qmax    # per-output-channel symmetric scale
-    q = np.clip(np.round(wr / scale), -qmax - 1, qmax)    # the N-bit integers
-    wr_hat = q * scale                                    # dequantize
+        n, wr = in_, w
+    if act is not None:                                   # influence/activation-energy rescale
+        a = np.asarray(act, np.float32)
+        if rotate:
+            ap = np.zeros((a.shape[0], n), np.float32); ap[:, :in_] = a
+            ar = fwht(ap) / np.sqrt(n)                    # energy in the SAME (rotated) basis as wr
+        else:
+            ar = a
+        e = np.sqrt((ar ** 2).mean(0)) + 1e-8            # per-coordinate activation energy
+        s = e ** alpha
+        s = s / (s.mean() + 1e-8)                         # normalize (folds out consistently)
+    else:
+        s = np.ones(wr.shape[0], np.float32)
+    wss = wr * s[:, None]                                 # amplify high-energy rows before rounding
+    scale = np.maximum(np.abs(wss).max(0), 1e-8) / qmax   # per-output-channel symmetric scale
+    q = np.clip(np.round(wss / scale), -qmax - 1, qmax)   # the N-bit integers
+    wr_hat = (q * scale) / s[:, None]                     # dequantize + undo the row scaling
     if rotate:
         return (H @ wr_hat)[:in_]                         # rotate back (H H = I) -> original basis
     return wr_hat
 
 
-def quantize_tree(params, bits, rotate=True):
-    """Round-trip every dense (2D) weight in a param tree at `bits`; leave convs (4D) and norms (1D)."""
+def quantize_tree(params, bits, rotate=True, acts=None):
+    """Round-trip every dense (2D) weight at `bits`; leave convs (4D)/norms (1D). acts: optional
+    {layer_key: (M, in)} calibration activations (from net.capture_inputs) for activation-aware quant."""
     out = {}
     for k, (w, b) in params.items():
         w = np.asarray(w)
-        out[k] = (quantize_dequantize(w, bits, rotate), np.asarray(b)) if w.ndim == 2 else (w, b)
+        if w.ndim == 2:
+            a = acts.get(k) if acts else None
+            out[k] = (quantize_dequantize(w, bits, rotate, a), np.asarray(b))
+        else:
+            out[k] = (w, b)
     return out
 
 
@@ -93,12 +115,15 @@ if __name__ == "__main__":
     # a weight with a few large outliers -- the case naive low-bit quant handles badly
     w = rng.standard_normal((128, 64)).astype(np.float32)
     w[rng.integers(0, 128, 6), rng.integers(0, 64, 6)] *= 25.0
-    x = rng.standard_normal((256, 128)).astype(np.float32)
+    # NON-uniform activation energy per channel (real nets are like this) -> act-energy has signal
+    chan_scale = (rng.random(128).astype(np.float32) ** 3) * 5 + 0.1
+    x = (rng.standard_normal((256, 128)).astype(np.float32) * chan_scale)
     y = x @ w
     print("relative reconstruction error  ||x(W_hat-W)|| / ||xW||   (lower is better):")
-    print(f"  {'bits':>4} | {'naive':>10} | {'WHT-rotated':>12}")
+    print(f"  {'bits':>4} | {'naive':>10} | {'WHT':>10} | {'WHT+actE':>10}")
     for bits in (8, 4, 3, 2):
         e_naive = np.linalg.norm(x @ quantize_dequantize(w, bits, False) - y) / np.linalg.norm(y)
         e_wht = np.linalg.norm(x @ quantize_dequantize(w, bits, True) - y) / np.linalg.norm(y)
-        print(f"  {bits:>4} | {e_naive:>10.4f} | {e_wht:>12.4f}")
-    print("\nWHT rotation should win most at the lowest bit-widths (outliers spread -> less clipping).")
+        e_act = np.linalg.norm(x @ quantize_dequantize(w, bits, True, act=x) - y) / np.linalg.norm(y)
+        print(f"  {bits:>4} | {e_naive:>10.4f} | {e_wht:>10.4f} | {e_act:>10.4f}")
+    print("\nWHT spreads outliers; +actE then spends precision on the high-energy channels -> best at low bits.")

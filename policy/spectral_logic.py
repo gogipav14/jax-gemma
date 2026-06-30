@@ -73,6 +73,52 @@ def quantize_coeffs(coeffs, bits):
     return np.clip(np.round(coeffs / scale), -qmax - 1, qmax) * scale
 
 
+# --- the COUNTER head is also a discrete function: enemy composition -> the answer (4 classes) ---
+COUNTER_ROLES = [gm.MAIN_BATTLE, gm.ANTI_ARMOR, gm.ANTI_AIR, gm.ARTILLERY, gm.SUPERUNIT]   # enemy bits
+KC = len(COUNTER_ROLES)
+NC = 1 << KC
+N_CLASS = 4                                              # 0 none, 1 ANTI_ARMOR, 2 MAIN_BATTLE, 3 ANTI_AIR
+# each enemy role's correct answer (matches offline_bc.THREAT_MENU / COUNTER_IDX)
+ROLE_COUNTER = {gm.MAIN_BATTLE: 1, gm.ARTILLERY: 1, gm.SUPERUNIT: 3, gm.ANTI_ARMOR: 2, gm.ANTI_AIR: 2}
+
+
+def _counter_class(x):
+    """Dominant-threat counter class for an enemy bit-pattern x (max ROLE_VALUE = max severity)."""
+    present = [COUNTER_ROLES[i] for i in range(KC) if (x >> i) & 1]
+    if not present:
+        return 0
+    dom = max(present, key=lambda r: gm.ROLE_VALUE.get(r, 0.5))
+    return ROLE_COUNTER[dom]
+
+
+def build_counter_spectrum():
+    """One-vs-rest exact Walsh spectra for the 4 counter classes: coeffs (N_CLASS, NC)."""
+    cls = np.asarray([_counter_class(x) for x in range(NC)])
+    coeffs = np.stack([fwht((cls == c).astype(np.float32)) / NC for c in range(N_CLASS)])
+    return coeffs.astype(np.float32)
+
+
+def _parity_features_k(bits, k):
+    B = bits.shape[0]
+    n = 1 << k
+    S = np.arange(n)[None, :, None]
+    Sbits = ((S >> np.arange(k)) & 1).astype(np.float32)
+    inner = (bits[:, None, :] * Sbits).sum(-1)
+    return np.where(inner % 2 == 0, 1.0, -1.0).astype(np.float32)
+
+
+def predict_counter(coeffs, enemy_bits):
+    """Exact counter head: argmax over the 4 class scores. enemy_bits:(B,KC) -> (B,) class index."""
+    phi = _parity_features_k(np.asarray(enemy_bits, np.float32), KC)   # (B, NC)
+    return np.argmax(phi @ coeffs.T, 1)                                # (B, N_CLASS) -> class
+
+
+def bits_from_threats(pos):
+    """Enemy-role presence bit-vector over COUNTER_ROLES from a Position's threats."""
+    present = {t.role for t in pos.threats}
+    return np.asarray([1.0 if r in present else 0.0 for r in COUNTER_ROLES], np.float32)
+
+
 if __name__ == "__main__":
     coeffs = build_spectrum()
     nnz = (np.abs(coeffs) > 1e-6).sum(1)
@@ -91,3 +137,13 @@ if __name__ == "__main__":
         note = "exact" if acc == 1.0 else "approx"
         print(f"  {str(bits):>6} | {acc:>16.3f} | {note:<30}")
     print("\nThe Walsh head is exact and stays exact at low bit-widths -- the MLP head (see compare_brains) does not.")
+
+    # counter head: exact over ALL 2^KC enemy patterns, fp32 and low-bit
+    cc = build_counter_spectrum()
+    allc = np.stack([[(x >> b) & 1 for b in range(KC)] for x in range(NC)]).astype(np.float32)
+    ctruth = np.asarray([_counter_class(x) for x in range(NC)])
+    print("\ncounter-head accuracy over ALL 2^KC enemy states:")
+    for bits in ("fp32", 4, 2):
+        c = cc if bits == "fp32" else quantize_coeffs(cc, bits)
+        acc = float((predict_counter(c, allc) == ctruth).mean())
+        print(f"  {str(bits):>6} -> {acc:.3f}{'  (exact)' if acc == 1.0 else ''}")
