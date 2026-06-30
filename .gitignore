@@ -50,5 +50,5 @@ tmp/
 # Local Claude Code / editor settings (machine-specific, not for the public repo)
 .claude/
 yr_env/data/traces/
-policy/bc_policy.pkl
+policy/*.pkl
 *.pyc
