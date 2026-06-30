@@ -82,12 +82,27 @@ class YRLearnEnv:
         self.last_V = 0.0
 
     def reset(self):
+        import subprocess
         from write_act import ActWriter
         from catalog import Catalog
+        if self.obs_r:
+            try:
+                self.obs_r.close()
+            except Exception:
+                pass
+        if self.act_w:
+            try:
+                self.act_w.close()
+            except Exception:
+                pass
         if self.launch:
             import os, sys
             sys.path.insert(0, os.path.dirname(__file__))
             from commander_build import launch_game
+            # close any prior match first (multiple games can't share the OBS/ACT shared memory)
+            subprocess.run(["taskkill", "/F", "/IM", "gamemd-spawn.exe"], capture_output=True)
+            subprocess.run(["taskkill", "/F", "/IM", "Syringe.exe"], capture_output=True)
+            time.sleep(1)
             launch_game()
             time.sleep(2)
         self.obs_r = bb.connect()
@@ -102,6 +117,7 @@ class YRLearnEnv:
             time.sleep(1)
         self.memory, self.tick = {}, 0
         pos = gm.build_position(self.obs_r, self.cat, self.lut, self.memory, self.tick, self.econ)
+        self.pos = pos
         self.last_V = pos.V
         return encode(pos)
 
@@ -115,8 +131,14 @@ class YRLearnEnv:
         pos2 = gm.build_position(self.obs_r, self.cat, self.lut, self.memory, self.tick, self.econ)
         term_r, done = terminal_reward(pos2, s)
         reward = (pos2.V - self.last_V) + term_r          # dense ΔV + terminal win/lose
+        self.pos = pos2
         self.last_V = pos2.V
         return encode(pos2), float(reward), done, {"macro": MACROS[action_idx], "result": result, "V": pos2.V}
+
+    def grid(self):
+        """The spatial vision for the fused brain: (7, 64, 64) float in [0,1] (uint8 grid / 255)."""
+        g, _ = self.obs_r.read_grid()
+        return g.astype(np.float32) / 255.0
 
     def close(self):
         if self.obs_r:
