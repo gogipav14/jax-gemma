@@ -9,7 +9,10 @@ import enum
 
 # --- IPC header ---
 MAGIC = 0x59524252  # 'YRBR'
-VERSION = 2  # bump on any layout change; must match Bridge.h BridgeContract::VERSION
+VERSION = 3  # bump on any layout change; must match Bridge.h BridgeContract::VERSION
+
+GRID_DIM = 64       # spatial vision grid H = W (downsampled map)
+GRID_CHANNELS = 7   # passability, ore, fog, own_units, enemy_units, own_buildings, height
 
 SHMEM_OBS_NAME = "Local\\yr_bridge_obs"
 SHMEM_ACT_NAME = "Local\\yr_bridge_act"

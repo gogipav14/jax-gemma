@@ -14,8 +14,10 @@ import sys
 import time
 from ctypes import wintypes
 
+import numpy as np
+
 from contract import (MAGIC, VERSION, SHMEM_OBS_NAME, HEADER_FMT, GLOBALS_FMT,
-                      ENTITY_FMT, FACTORY_FMT, N_FACTORY)
+                      ENTITY_FMT, FACTORY_FMT, N_FACTORY, GRID_DIM, GRID_CHANNELS)
 
 FILE_MAP_READ = 0x0004
 N_OWN = N_ENEMY = 256
@@ -29,7 +31,10 @@ OFF_COUNTS = HEADER_SIZE + GLOBALS_SIZE            # 60
 OFF_OWN = OFF_COUNTS + 8                            # 68  (n_own,n_enemy,n_factory,pad)
 OFF_ENEMY = OFF_OWN + N_OWN * ENTITY_SIZE
 OFF_FACTORY = OFF_ENEMY + N_ENEMY * ENTITY_SIZE    # 8260
-OBS_SIZE = OFF_FACTORY + N_FACTORY * FACTORY_SIZE  # 8452
+OFF_GRID = OFF_FACTORY + N_FACTORY * FACTORY_SIZE  # 8452 — spatial vision grid (CHW uint8)
+GRID_SIZE = GRID_CHANNELS * GRID_DIM * GRID_DIM    # 28672
+OFF_GRID_DIMS = OFF_GRID + GRID_SIZE               # 37124 — grid_map_w, grid_map_h (uint16 each)
+OBS_SIZE = OFF_GRID_DIMS + 4                        # 37128
 
 _HEAD_FMT = HEADER_FMT + GLOBALS_FMT + "HHHH"      # + n_own,n_enemy,n_factory,_pad
 _HEAD_SIZE = struct.calcsize(_HEAD_FMT)            # 68
@@ -109,6 +114,20 @@ class ObsReader:
                         "on_hold": bool(flags & 1), "suspended": bool(flags & 2),
                         "active": cur != -1})
         return out
+
+    def read_grid(self):
+        """Spatial vision: (channels, H, W) uint8 grid + (map_w, map_h) cell bounds it covers.
+        Seqlock-guarded against torn mid-frame reads (frame_seq at header offset 8).
+        Channels: 0 passability, 1 ore, 2 fog(0/1/2), 3 own_units, 4 enemy_units(visible), 5 own_buildings, 6 height."""
+        buf = dims = None
+        for _ in range(8):
+            seq1 = struct.unpack("<Q", self._bytes(8, 8))[0]
+            buf = self._bytes(OFF_GRID, GRID_SIZE)
+            dims = self._bytes(OFF_GRID_DIMS, 4)
+            if struct.unpack("<Q", self._bytes(8, 8))[0] == seq1:
+                break
+        g = np.frombuffer(buf, dtype=np.uint8).reshape(GRID_CHANNELS, GRID_DIM, GRID_DIM)
+        return g.copy(), struct.unpack("<HH", dims)
 
     def close(self):
         if self.addr:
