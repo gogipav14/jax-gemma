@@ -49,15 +49,16 @@ def _next_pow2(n):
     return 1 << (n - 1).bit_length()
 
 
-def quantize_dequantize(w, bits, rotate=True, act=None, alpha=0.5):
-    """Round-trip a weight matrix (in, out) through N-bit per-output-channel quantization.
+def quantize_dequantize(w, bits, rotate=True, act=None, alpha=0.5, group=None):
+    """Round-trip a weight matrix (in, out) through N-bit quantization.
 
     rotate=True applies the WHT incoherence rotation (QuIP/QuaRot core). act (M, in) is calibration
-    activations for this layer: when given, rescale the (rotated) input rows by per-coordinate
-    activation energy^alpha before quantizing -- the influence-adaptive step of arXiv:2605.25203, so
-    the high-energy channels (which dominate y) are quantized with less relative error. The scaling
-    is folded back into the returned fp32 weight, so the normal forward reproduces the activation-
-    aware quantized inference exactly. rotate=False, act=None is the naive baseline."""
+    activations: when given, rescale the (rotated) input rows by per-coordinate activation energy^alpha
+    before quantizing -- the influence-adaptive step of arXiv:2605.25203, so the high-energy channels
+    (which dominate y) get less relative error. group=g uses a separate scale per g consecutive input
+    rows (group-wise quant; tighter dynamic range -> better at low bits); group=None is per-output-
+    channel. All scaling/rotation is folded back into the returned fp32 weight, so the normal forward
+    reproduces the quantized inference exactly. rotate=False, act=None, group=None is naive."""
     w = np.asarray(w, np.float32)
     in_, out = w.shape
     qmax = 2 ** (bits - 1) - 1
@@ -76,28 +77,34 @@ def quantize_dequantize(w, bits, rotate=True, act=None, alpha=0.5):
         else:
             ar = a
         e = np.sqrt((ar ** 2).mean(0)) + 1e-8            # per-coordinate activation energy
-        s = e ** alpha
+        s = (e ** alpha)
         s = s / (s.mean() + 1e-8)                         # normalize (folds out consistently)
     else:
         s = np.ones(wr.shape[0], np.float32)
     wss = wr * s[:, None]                                 # amplify high-energy rows before rounding
-    scale = np.maximum(np.abs(wss).max(0), 1e-8) / qmax   # per-output-channel symmetric scale
-    q = np.clip(np.round(wss / scale), -qmax - 1, qmax)   # the N-bit integers
-    wr_hat = (q * scale) / s[:, None]                     # dequantize + undo the row scaling
+    g = min(group or n, n)
+    pad_n = -(-n // g) * g                                # round n up to a multiple of g
+    if pad_n != n:
+        wss = np.vstack([wss, np.zeros((pad_n - n, out), np.float32)])
+    wg = wss.reshape(pad_n // g, g, out)                  # group input rows
+    scale = np.maximum(np.abs(wg).max(1, keepdims=True), 1e-8) / qmax     # per-(group, out) scale
+    q = np.clip(np.round(wg / scale), -qmax - 1, qmax)
+    wss_hat = (q * scale).reshape(pad_n, out)[:n]
+    wr_hat = wss_hat / s[:, None]                         # dequantize + undo the row scaling
     if rotate:
         return (H @ wr_hat)[:in_]                         # rotate back (H H = I) -> original basis
     return wr_hat
 
 
-def quantize_tree(params, bits, rotate=True, acts=None):
+def quantize_tree(params, bits, rotate=True, acts=None, alpha=0.5, group=None):
     """Round-trip every dense (2D) weight at `bits`; leave convs (4D)/norms (1D). acts: optional
-    {layer_key: (M, in)} calibration activations (from net.capture_inputs) for activation-aware quant."""
+    {layer_key:(M,in)} calibration activations for activation-aware quant; group: group-wise size."""
     out = {}
     for k, (w, b) in params.items():
         w = np.asarray(w)
         if w.ndim == 2:
             a = acts.get(k) if acts else None
-            out[k] = (quantize_dequantize(w, bits, rotate, a), np.asarray(b))
+            out[k] = (quantize_dequantize(w, bits, rotate, a, alpha, group), np.asarray(b))
         else:
             out[k] = (w, b)
     return out

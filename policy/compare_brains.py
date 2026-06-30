@@ -97,10 +97,28 @@ if __name__ == "__main__":
     print(f"  fp32 baseline       move {base['move']:.3f}  prereq {base['prereq']:.3f}  "
           f"counter {base['counter']:.3f}  power {base['power']:.3f}")
     for bits in (4, 3, 2):
-        for tag, rot, ac in [("naive   ", False, None), ("WHT     ", True, None), ("WHT+actE", True, acts)]:
-            acc = head_acc(wq.quantize_tree(p, bits, rot, ac), G, S, E, EM, A, BLD, CNT, PWR)
-            print(f"  {bits}-bit {tag}    move {acc['move']:.3f}  prereq {acc['prereq']:.3f}  "
+        for tag, rot in [("naive", False), ("WHT  ", True)]:
+            acc = head_acc(wq.quantize_tree(p, bits, rot), G, S, E, EM, A, BLD, CNT, PWR)
+            print(f"  {bits}-bit {tag}       move {acc['move']:.3f}  prereq {acc['prereq']:.3f}  "
                   f"counter {acc['counter']:.3f}  power {acc['power']:.3f}")
+
+    print("\n=== 1b. WHT + activation-energy: group-size x alpha search (move accuracy) ===")
+    best = {}
+    for bits in (3, 2):
+        print(f"  {bits}-bit | " + "  ".join(f"a={a:.2f}" for a in (0.0, 0.5, 1.0)))
+        bestcfg = (-1, None)
+        for group in (None, 64, 32, 16):
+            row = []
+            for alpha in (0.0, 0.5, 1.0):
+                ac = None if alpha == 0.0 else acts
+                acc = head_acc(wq.quantize_tree(p, bits, True, ac, alpha, group), G, S, E, EM, A, BLD, CNT, PWR)["move"]
+                row.append(acc)
+                if acc > bestcfg[0]:
+                    bestcfg = (acc, {"group": group, "alpha": alpha})
+            print(f"    g={str(group):>4} | " + "   ".join(f"{x:.3f}" for x in row))
+        best[bits] = bestcfg[1]
+        wht_pc = head_acc(wq.quantize_tree(p, bits, True), G, S, E, EM, A, BLD, CNT, PWR)["move"]
+        print(f"    -> best {bits}-bit: {bestcfg[1]}  move {bestcfg[0]:.3f}   (plain WHT per-channel {wht_pc:.3f})")
 
     print("\n=== 2. discrete logic heads: dense MLP vs EXACT Walsh-spectral ===")
     pc, cc = sl.build_spectrum(), sl.build_counter_spectrum()
@@ -110,13 +128,15 @@ if __name__ == "__main__":
           f"2-bit {float((sl.predict_counter(sl.quantize_coeffs(cc,2), CBITS)==CNT).mean()):.3f}")
     for bits in (3, 2):
         an = head_acc(wq.quantize_tree(p, bits, False), G, S, E, EM, A, BLD, CNT, PWR)
-        aw = head_acc(wq.quantize_tree(p, bits, True, acts), G, S, E, EM, A, BLD, CNT, PWR)
-        print(f"  MLP heads  {bits}-bit   prereq naive {an['prereq']:.3f}/actE {aw['prereq']:.3f}   "
-              f"counter naive {an['counter']:.3f}/actE {aw['counter']:.3f}")
+        bg = best[bits]
+        aw = head_acc(wq.quantize_tree(p, bits, True, acts, bg["alpha"], bg["group"]), G, S, E, EM, A, BLD, CNT, PWR)
+        print(f"  MLP heads  {bits}-bit   prereq naive {an['prereq']:.3f}/best {aw['prereq']:.3f}   "
+              f"counter naive {an['counter']:.3f}/best {aw['counter']:.3f}")
 
-    print("\n=== 3. two games: fp32 brain (WITHOUT) vs WHT+actE-quantized brain (WITH) ===")
+    bg3 = best[3]
+    print(f"\n=== 3. two games: fp32 brain (WITHOUT) vs best 3-bit brain {bg3} (WITH) ===")
     seqf, fixf, hpf = play(p, np.random.default_rng(123))
-    seqq, fixq, hpq = play(wq.quantize_tree(p, 3, True, acts), np.random.default_rng(123))
+    seqq, fixq, hpq = play(wq.quantize_tree(p, 3, True, acts, bg3["alpha"], bg3["group"]), np.random.default_rng(123))
     print(f"  fp32          : {' '.join(seqf)}")
     print(f"                 blackout-rebuild={fixf}  enemy_hp_left={hpf}")
     print(f"  WHT+actE 3-bit: {' '.join(seqq)}")
